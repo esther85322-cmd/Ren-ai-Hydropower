@@ -34,11 +34,12 @@ function computeAttendance(startStr, endStr) {
 export default function CheckinPage() {
   const [loading, setLoading] = useState(true);
   const [workers, setWorkers] = useState([]);
-  const [site, setSite] = useState(DEFAULT_SITE);
+  const [sites, setSites] = useState([DEFAULT_SITE]);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(null);
   const [form, setForm] = useState({
     workerId: "",
+    siteId: "",
     date: todayStr(),
     start: "08:00",
     end: "17:00",
@@ -46,27 +47,32 @@ export default function CheckinPage() {
 
   useEffect(() => {
     (async () => {
-      const [wk, sites] = await Promise.all([
+      const [wk, st] = await Promise.all([
         storageGet("workers", []),
         storageGet("sites", [DEFAULT_SITE]),
       ]);
       setWorkers(wk);
+      const siteList = st && st.length ? st : [DEFAULT_SITE];
+      setSites(siteList);
+      // URL 可以帶 ?site=<id> 預先選好案場（方便針對單一案場分享固定連結），
+      // 沒有帶的話預設選第一個，之後仍可在頁面上手動改選。
       const params = new URLSearchParams(window.location.search);
       const siteId = params.get("site");
-      const matched = (sites && sites.length ? sites : [DEFAULT_SITE]).find((s) => s.id === siteId);
-      setSite(matched || (sites && sites[0]) || DEFAULT_SITE);
+      const matched = siteList.find((s) => s.id === siteId);
+      setForm((f) => ({ ...f, siteId: (matched || siteList[0]).id }));
       setLoading(false);
     })();
   }, []);
 
   const result = useMemo(() => computeAttendance(form.start, form.end), [form.start, form.end]);
   const selectedWorker = workers.find((w) => w.id === form.workerId);
+  const selectedSite = sites.find((s) => s.id === form.siteId);
 
   const [error, setError] = useState("");
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.workerId) return;
+    if (!form.workerId || !form.siteId) return;
     if (!result || result.days <= 0) return;
     setSaving(true);
     setError("");
@@ -82,15 +88,15 @@ export default function CheckinPage() {
         date: form.date,
         days: result.days,
         note: `打卡 ${form.start}-${form.end}${result.overtimeHours > 0 ? `，加班 ${result.overtimeHours} 小時` : ""}`,
-        siteId: site.id,
+        siteId: form.siteId,
         startTime: form.start,
         endTime: form.end,
         overtimeHours: result.overtimeHours,
       };
       const ok = await storageSet("worklogs", [rec, ...list]);
       if (!ok) throw new Error("write failed");
-      setDone({ workerName: selectedWorker?.name, ...result, date: form.date });
-      setForm({ workerId: "", date: todayStr(), start: "08:00", end: "17:00" });
+      setDone({ workerName: selectedWorker?.name, siteName: selectedSite?.name, ...result, date: form.date });
+      setForm((f) => ({ ...f, workerId: "", date: todayStr(), start: "08:00", end: "17:00" }));
     } catch (err) {
       console.error("checkin submit failed", err);
       setError("送出失敗，請檢查網路後再試一次（資料還沒有記錄）");
@@ -139,7 +145,7 @@ export default function CheckinPage() {
       `}</style>
       <div className="ckn-card">
         <div className="ckn-title"><HardHat size={22} /> 出工打卡</div>
-        <div className="ckn-site">{loading ? "讀取中…" : `案場：${site.name}`}</div>
+        <div className="ckn-site">{loading ? "讀取中…" : `${sites.length} 個案場可選`}</div>
 
         {loading ? (
           <div className="ckn-loading">讀取中…</div>
@@ -148,11 +154,17 @@ export default function CheckinPage() {
             {done && (
               <div className="ckn-done">
                 <div><CheckCircle2 size={16} style={{ verticalAlign: "-3px", marginRight: 6, color: "#6B9B6E" }} />已記錄！</div>
-                <div>{done.workerName} · {done.date}</div>
+                <div>{done.siteName} · {done.workerName} · {done.date}</div>
                 <div>工作時數 <b>{done.hours}</b> 小時，出工 <b>{done.days}</b> 天{done.overtimeHours > 0 ? <>，加班 <b>{done.overtimeHours}</b> 小時</> : null}</div>
               </div>
             )}
             <form onSubmit={submit}>
+              <div className="ckn-field">
+                <label>案場</label>
+                <select value={form.siteId} onChange={(e) => setForm({ ...form, siteId: e.target.value })} required>
+                  {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
               <div className="ckn-field">
                 <label>師傅</label>
                 <select value={form.workerId} onChange={(e) => setForm({ ...form, workerId: e.target.value })} required>
@@ -192,7 +204,7 @@ export default function CheckinPage() {
                 <div className="ckn-warn" style={{ marginBottom: 12 }}>目前還沒有師傅名單，請先請管理者在後台新增。</div>
               ) : null}
 
-              <button type="submit" className="ckn-btn" disabled={saving || !form.workerId || !result || result.days <= 0}>
+              <button type="submit" className="ckn-btn" disabled={saving || !form.workerId || !form.siteId || !result || result.days <= 0}>
                 {saving ? "送出中…" : "送出打卡"}
               </button>
               {error && <div className="ckn-warn" style={{ marginTop: 10 }}>{error}</div>}
