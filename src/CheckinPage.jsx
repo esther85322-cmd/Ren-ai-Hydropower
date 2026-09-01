@@ -33,7 +33,7 @@ function computeAttendance(startStr, endStr) {
 
 const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
 
-// 某位師傅在某個月份每一天的出班狀態：紅=有出班（滿天），黃=半天，綠=休息（沒有紀錄）。
+// 某位師傅在某個月份每一天的出班狀態：紫=有加班，紅=有出班（滿天），黃=半天，綠=休息（沒有紀錄）。
 function buildMonthCalendar(workerId, monthDateStr, worklogs) {
   const [y, m] = monthDateStr.split("-").map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
@@ -48,7 +48,15 @@ function buildMonthCalendar(workerId, monthDateStr, worklogs) {
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const log = byDate[dateStr];
-    const status = !log ? "rest" : Number(log.days) >= 1 ? "work" : Number(log.days) > 0 ? "half" : "rest";
+    const status = !log
+      ? "rest"
+      : Number(log.overtimeHours) > 0
+      ? "overtime"
+      : Number(log.days) >= 1
+      ? "work"
+      : Number(log.days) > 0
+      ? "half"
+      : "rest";
     days.push({ d, dateStr, status });
   }
   return { y, m, startWeekday, days };
@@ -216,11 +224,13 @@ export default function CheckinPage() {
         .ckn-cal-day {
           aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
           border-radius: 6px; font-size: 12px; font-family: monospace; color: #1C2530; font-weight: 600;
+          border: none; cursor: pointer; padding: 0;
         }
         .ckn-cal-day.rest { background: rgba(107,155,110,0.35); color: #E8E4DA; }
         .ckn-cal-day.half { background: #E8D24A; }
         .ckn-cal-day.work { background: #D9503C; color: #fff; }
-        .ckn-cal-day.today { box-shadow: 0 0 0 2px #E8A33D inset; }
+        .ckn-cal-day.overtime { background: #8B5CD9; color: #fff; }
+        .ckn-cal-day.selected { box-shadow: 0 0 0 2px #E8A33D inset; }
         .ckn-cal-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: #8B95A1; }
         .ckn-cal-legend span { display: inline-flex; align-items: center; gap: 4px; }
         .ckn-cal-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
@@ -261,11 +271,18 @@ export default function CheckinPage() {
                     {WEEKDAY_LABELS.map((w) => <div key={w} className="ckn-cal-wd">{w}</div>)}
                     {Array.from({ length: calendar.startWeekday }).map((_, i) => <div key={"pad" + i} />)}
                     {calendar.days.map(({ d, dateStr, status }) => (
-                      <div key={d} className={`ckn-cal-day ${status}${dateStr === todayStr() ? " today" : ""}`}>{d}</div>
+                      <button
+                        key={d} type="button"
+                        className={`ckn-cal-day ${status}${dateStr === form.date ? " selected" : ""}`}
+                        onClick={() => setForm((f) => ({ ...f, date: dateStr }))}
+                      >
+                        {d}
+                      </button>
                     ))}
                   </div>
                   <div className="ckn-cal-legend">
                     <span><i className="ckn-cal-dot" style={{ background: "#D9503C" }} />有出班</span>
+                    <span><i className="ckn-cal-dot" style={{ background: "#8B5CD9" }} />有加班</span>
                     <span><i className="ckn-cal-dot" style={{ background: "#E8D24A" }} />半天</span>
                     <span><i className="ckn-cal-dot" style={{ background: "rgba(107,155,110,0.6)" }} />休息</span>
                   </div>
