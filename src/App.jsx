@@ -4279,7 +4279,7 @@ function StyleBlock() {
       .wel-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 34px 0; color: var(--text-muted); font-size: 13px; }
 
       .wel-inline-rate {
-        width: 84px; background: var(--surface2); border: 1px solid var(--border); color: var(--amber);
+        width: 104px; flex-shrink: 0; background: var(--surface2); border: 1px solid var(--border); color: var(--amber);
         font-family: var(--font-mono); font-weight: 600; border-radius: 5px; padding: 5px 7px; font-size: 12.5px; text-align: right;
       }
       .wel-inline-rate:focus { outline: none; border-color: var(--teal); }
@@ -4298,11 +4298,11 @@ function StyleBlock() {
       .wel-labor-stat b { font-size: 18px; font-family: var(--font-mono); font-weight: 600; }
 
       .wel-cat-list { display: flex; flex-direction: column; gap: 8px; }
-      .wel-cat-item { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+      .wel-cat-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
       .wel-timeline-wrap { background: #171F27; border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 10px 14px; margin: -6px 0 6px; max-height: 340px; overflow-y: auto; }
       .wel-timeline .wel-table { font-size: 12px; }
       .wel-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-      .wel-cat-name { flex: 1; font-size: 13.5px; }
+      .wel-cat-name { flex: 1; min-width: 60px; font-size: 13.5px; }
 
       .wel-site-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
       .wel-site-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; transition: border-color 0.15s, transform 0.1s; }
