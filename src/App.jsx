@@ -4253,7 +4253,7 @@ function StyleBlock() {
       @media (max-width: 700px) { .wel-form-grid { grid-template-columns: 1fr 1fr; } .wel-form-grid-btn { grid-template-columns: 1fr !important; } }
       @media (max-width: 480px) { .wel-form-grid { grid-template-columns: 1fr !important; } }
       .wel-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); min-width: 0; }
-      .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 9px; font-family: var(--font-body); font-size: 13.5px; width: 100%; min-width: 0; }
+      .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 0 9px; font-family: var(--font-body); font-size: 13.5px; width: 100%; min-width: 0; height: 40px; box-sizing: border-box; }
       .wel-field input:focus, .wel-field select:focus { outline: none; border-color: var(--teal); }
       .wel-amount-preview { font-family: var(--font-mono); font-weight: 600; color: var(--amber); padding: 8px 0; font-size: 14px; }
 
