@@ -31,8 +31,12 @@ const app = initializeApp(firebaseConfig);
 // 本機快取：第一次打開會照常連線抓資料，但抓過一次之後會存在瀏覽器裡，
 // 之後再打開網頁時會先秒開快取畫面，同時在背景悄悄跟雲端同步最新資料，
 // 不用每次都整頁乾等 Firestore 回應。
+// experimentalForceLongPolling：跳過 Firestore 預設的連線方式自動偵測
+// （這個偵測在某些行動網路 / Wi-Fi 環境下會拖到 30-60 秒才 fallback），
+// 直接一開始就用相容性最好的長輪詢方式連線，明顯縮短第一次打開的等待時間。
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  experimentalForceLongPolling: true,
 });
 export const auth = getAuth(app);
 
