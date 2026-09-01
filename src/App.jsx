@@ -11,7 +11,7 @@ import {
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
   MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText
 } from "lucide-react";
-import { auth, ensureSignedIn, FIRESTORE_BASE } from "./firebase";
+import { storageGet, storageSet, storageGetAll } from "./storage";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -37,84 +37,6 @@ const fmtNum = (n) => {
   const v = Number(n) || 0;
   return Number.isInteger(v) ? v.toLocaleString("zh-TW") : v.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
 };
-
-// ---- Firestore-backed persistence layer (REST API) ----
-// Every piece of app data (orders, contracts, sites, ...) is stored as ONE document
-// in the "wel-data" collection, keyed by name — e.g. wel-data/orders.
-// This mirrors the original key/value shape 1:1, so the rest of the app (which only
-// ever calls storageGet/storageSet) needed no other changes to move off the
-// Claude-artifact storage API and onto a real database.
-// Reads/writes go through Firestore's plain HTTPS REST API rather than the
-// firebase/firestore SDK, which routes even one-time reads through its
-// real-time "Watch" channel — that channel can take a long time to establish
-// on some networks. REST is a single ordinary HTTPS request per call.
-const COLLECTION = "wel-data";
-
-async function authHeader() {
-  await ensureSignedIn();
-  const token = await auth.currentUser.getIdToken();
-  return { Authorization: `Bearer ${token}` };
-}
-
-// Fetches every document in the collection in a single round trip, instead of
-// one request per key — used on initial load where all keys are needed at once.
-async function storageGetAll() {
-  const byKey = {};
-  try {
-    const headers = await authHeader();
-    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}?pageSize=300`, { headers });
-    if (!res.ok) throw new Error(`list failed: ${res.status}`);
-    const data = await res.json();
-    for (const d of data.documents || []) {
-      const key = d.name.split("/").pop();
-      const raw = d.fields?.value?.stringValue;
-      if (raw === undefined) continue;
-      try {
-        byKey[key] = JSON.parse(raw);
-      } catch (e) {
-        console.error("parse failed", key, e);
-      }
-    }
-  } catch (e) {
-    console.error("storage get all failed", e);
-  }
-  return byKey;
-}
-
-async function storageGet(key, fallback) {
-  try {
-    const headers = await authHeader();
-    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}/${key}`, { headers });
-    if (res.status === 404) return fallback;
-    if (!res.ok) throw new Error(`get failed: ${res.status}`);
-    const data = await res.json();
-    const raw = data.fields?.value?.stringValue;
-    return raw === undefined ? fallback : JSON.parse(raw);
-  } catch (e) {
-    console.error("storage get failed", key, e);
-    return fallback;
-  }
-}
-async function storageSet(key, value) {
-  try {
-    const headers = await authHeader();
-    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}/${key}`, {
-      method: "PATCH",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fields: {
-          value: { stringValue: JSON.stringify(value) },
-          updatedAt: { timestampValue: new Date().toISOString() },
-        },
-      }),
-    });
-    if (!res.ok) throw new Error(`set failed: ${res.status}`);
-    return true;
-  } catch (e) {
-    console.error("storage set failed", key, e);
-    return false;
-  }
-}
 
 // ---- Excel / Word export helpers ----
 function triggerDownload(blob, filename) {
@@ -230,7 +152,7 @@ export default function WaterElectricLedger() {
   // ---- load ----
   useEffect(() => {
     (async () => {
-      const data = await storageGetAll();
+      const { data, ok } = await storageGetAll();
       const meta = data.meta ?? { projectName: "水電工程記帳", categories: DEFAULT_CATEGORIES };
       const ord = data.orders ?? [];
       const use = data.usages ?? [];
@@ -274,6 +196,14 @@ export default function WaterElectricLedger() {
       setMaterialItems(mi);
       setSuppliers(sup);
       setLoading(false);
+      if (!ok) {
+        // The read itself failed (network/auth hiccup) — do NOT run any of the
+        // auto-migration writes below. An empty/partial `data` here means
+        // "we don't know what's in the database", not "the database is empty",
+        // and writing defaults in that case would overwrite real data.
+        showToast("資料讀取失敗，請重新整理頁面再試一次");
+        return;
+      }
       if (JSON.stringify(migOrd) !== JSON.stringify(ord)) storageSet("orders", migOrd);
       if (JSON.stringify(migUse) !== JSON.stringify(use)) storageSet("usages", migUse);
       if (JSON.stringify(migWl) !== JSON.stringify(wl)) storageSet("worklogs", migWl);
