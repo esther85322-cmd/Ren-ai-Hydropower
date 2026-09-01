@@ -31,6 +31,29 @@ function computeAttendance(startStr, endStr) {
   return { hours: Math.round(hours * 10) / 10, days, overtimeHours };
 }
 
+const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
+
+// 某位師傅在某個月份每一天的出班狀態：紅=有出班（滿天），黃=半天，綠=休息（沒有紀錄）。
+function buildMonthCalendar(workerId, monthDateStr, worklogs) {
+  const [y, m] = monthDateStr.split("-").map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const startWeekday = new Date(y, m - 1, 1).getDay();
+  const byDate = {};
+  for (const l of worklogs) {
+    if (l.workerId !== workerId) continue;
+    if (!l.date.startsWith(monthDateStr.slice(0, 7))) continue;
+    byDate[l.date] = l;
+  }
+  const days = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const log = byDate[dateStr];
+    const status = !log ? "rest" : Number(log.days) >= 1 ? "work" : Number(log.days) > 0 ? "half" : "rest";
+    days.push({ d, dateStr, status });
+  }
+  return { y, m, startWeekday, days };
+}
+
 export default function CheckinPage() {
   const [loading, setLoading] = useState(true);
   const [workers, setWorkers] = useState([]);
@@ -70,6 +93,10 @@ export default function CheckinPage() {
   const result = useMemo(() => computeAttendance(form.start, form.end), [form.start, form.end]);
   const selectedWorker = workers.find((w) => w.id === form.workerId);
   const selectedSite = sites.find((s) => s.id === form.siteId);
+
+  const calendar = form.workerId
+    ? buildMonthCalendar(form.workerId, form.date, worklogs)
+    : null;
 
   // 同一位師傅、同一天已經打過卡了 → 不新增一筆，而是修改原本那筆的時間。
   const existingLog = form.workerId
@@ -182,6 +209,21 @@ export default function CheckinPage() {
           padding: 16px; margin-bottom: 20px; font-size: 14px; line-height: 1.7;
         }
         .ckn-loading { padding: 60px 0; text-align: center; color: #8B95A1; }
+        .ckn-cal { margin-bottom: 20px; }
+        .ckn-cal-title { font-size: 12.5px; color: #8B95A1; margin-bottom: 8px; }
+        .ckn-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+        .ckn-cal-wd { text-align: center; font-size: 10.5px; color: #6B7684; padding-bottom: 2px; }
+        .ckn-cal-day {
+          aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+          border-radius: 6px; font-size: 12px; font-family: monospace; color: #1C2530; font-weight: 600;
+        }
+        .ckn-cal-day.rest { background: rgba(107,155,110,0.35); color: #E8E4DA; }
+        .ckn-cal-day.half { background: #E8D24A; }
+        .ckn-cal-day.work { background: #D9503C; color: #fff; }
+        .ckn-cal-day.today { box-shadow: 0 0 0 2px #E8A33D inset; }
+        .ckn-cal-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: #8B95A1; }
+        .ckn-cal-legend span { display: inline-flex; align-items: center; gap: 4px; }
+        .ckn-cal-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
       `}</style>
       <div className="ckn-card">
         <div className="ckn-title"><HardHat size={22} /> 出工打卡</div>
@@ -212,6 +254,24 @@ export default function CheckinPage() {
                   {workers.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
                 </select>
               </div>
+              {calendar && (
+                <div className="ckn-cal">
+                  <div className="ckn-cal-title">{selectedWorker?.name} · {calendar.y}年{calendar.m}月出班紀錄</div>
+                  <div className="ckn-cal-grid">
+                    {WEEKDAY_LABELS.map((w) => <div key={w} className="ckn-cal-wd">{w}</div>)}
+                    {Array.from({ length: calendar.startWeekday }).map((_, i) => <div key={"pad" + i} />)}
+                    {calendar.days.map(({ d, dateStr, status }) => (
+                      <div key={d} className={`ckn-cal-day ${status}${dateStr === todayStr() ? " today" : ""}`}>{d}</div>
+                    ))}
+                  </div>
+                  <div className="ckn-cal-legend">
+                    <span><i className="ckn-cal-dot" style={{ background: "#D9503C" }} />有出班</span>
+                    <span><i className="ckn-cal-dot" style={{ background: "#E8D24A" }} />半天</span>
+                    <span><i className="ckn-cal-dot" style={{ background: "rgba(107,155,110,0.6)" }} />休息</span>
+                  </div>
+                </div>
+              )}
+
               <div className="ckn-field">
                 <label>日期</label>
                 <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} required />
