@@ -6,5 +6,5 @@ import react from "@vitejs/plugin-react";
 // 如果你是用 Firebase Hosting（而不是 GitHub Pages）部署，base 改回 "/" 即可。
 export default defineConfig({
   plugins: [react()],
-  base: "/Ren-ai-Hydropower/",
+  base: "/",
 });

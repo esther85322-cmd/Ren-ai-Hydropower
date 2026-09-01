@@ -19,11 +19,21 @@ const firebaseConfig = {
 };
 
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// 本機快取：第一次打開會照常連線抓資料，但抓過一次之後會存在瀏覽器裡，
+// 之後再打開網頁時會先秒開快取畫面，同時在背景悄悄跟雲端同步最新資料，
+// 不用每次都整頁乾等 Firestore 回應。
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
 export const auth = getAuth(app);
 
 // 用「匿名登入」讓 Firestore 安全規則可以要求 request.auth != null，
