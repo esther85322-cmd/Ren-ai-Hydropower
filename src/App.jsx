@@ -12,7 +12,7 @@ import {
   MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText
 } from "lucide-react";
 import { db, ensureSignedIn } from "./firebase";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { collection, getDocs, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -46,6 +46,29 @@ const fmtNum = (n) => {
 // ever calls storageGet/storageSet) needed no other changes to move off the
 // Claude-artifact storage API and onto a real database.
 const COLLECTION = "wel-data";
+
+// Fetches every document in the collection in a single round trip, instead of
+// one getDoc() per key — used on initial load where all keys are needed at once,
+// since 17 separate reads is far slower than 1 read of the whole collection.
+async function storageGetAll() {
+  const byKey = {};
+  try {
+    await ensureSignedIn();
+    const snap = await getDocs(collection(db, COLLECTION));
+    snap.forEach((d) => {
+      const raw = d.data()?.value;
+      if (raw === undefined) return;
+      try {
+        byKey[d.id] = JSON.parse(raw);
+      } catch (e) {
+        console.error("parse failed", d.id, e);
+      }
+    });
+  } catch (e) {
+    console.error("storage get all failed", e);
+  }
+  return byKey;
+}
 
 async function storageGet(key, fallback) {
   try {
@@ -188,25 +211,24 @@ export default function WaterElectricLedger() {
   // ---- load ----
   useEffect(() => {
     (async () => {
-      const [meta, ord, use, wk, wl, st, ct, pay, fi, cp, ctr, cfi, cwl, di, ci, mi, sup] = await Promise.all([
-        storageGet("meta", { projectName: "水電工程記帳", categories: DEFAULT_CATEGORIES }),
-        storageGet("orders", []),
-        storageGet("usages", []),
-        storageGet("workers", []),
-        storageGet("worklogs", []),
-        storageGet("sites", [DEFAULT_SITE]),
-        storageGet("contracts", []),
-        storageGet("payments", []),
-        storageGet("flooritems", []),
-        storageGet("clientpayments", []),
-        storageGet("clienttemplate", []),
-        storageGet("clientflooritems", []),
-        storageGet("contractworklogs", []),
-        storageGet("discussionitems", []),
-        storageGet("contractitems", []),
-        storageGet("materialitems", []),
-        storageGet("suppliers", []),
-      ]);
+      const data = await storageGetAll();
+      const meta = data.meta ?? { projectName: "水電工程記帳", categories: DEFAULT_CATEGORIES };
+      const ord = data.orders ?? [];
+      const use = data.usages ?? [];
+      const wk = data.workers ?? [];
+      const wl = data.worklogs ?? [];
+      const st = data.sites ?? [DEFAULT_SITE];
+      const ct = data.contracts ?? [];
+      const pay = data.payments ?? [];
+      const fi = data.flooritems ?? [];
+      const cp = data.clientpayments ?? [];
+      const ctr = data.clienttemplate ?? [];
+      const cfi = data.clientflooritems ?? [];
+      const cwl = data.contractworklogs ?? [];
+      const di = data.discussionitems ?? [];
+      const ci = data.contractitems ?? [];
+      const mi = data.materialitems ?? [];
+      const sup = data.suppliers ?? [];
       const siteList = st && st.length ? st : [DEFAULT_SITE];
       const fallbackSiteId = siteList[0].id;
       // migrate legacy records created before 案場 (site) existed
