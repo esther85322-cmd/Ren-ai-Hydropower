@@ -19,17 +19,11 @@ const firebaseConfig = {
 };
 
 import { initializeApp } from "firebase/app";
-import { initializeFirestore } from "firebase/firestore";
+import { getFirestore } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 
 const app = initializeApp(firebaseConfig);
-
-// experimentalForceLongPolling：跳過 Firestore 預設的連線方式自動偵測
-// （這個偵測在某些行動網路 / Wi-Fi 環境下會拖到 30-60 秒才 fallback），
-// 直接一開始就用相容性最好的長輪詢方式連線，縮短第一次打開的等待時間。
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-});
+export const db = getFirestore(app);
 export const auth = getAuth(app);
 
 // 用「匿名登入」讓 Firestore 安全規則可以要求 request.auth != null，
