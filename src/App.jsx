@@ -2048,6 +2048,7 @@ function LaborTab({
   contractWorkLogs, contractRows, addAttendance, deleteAttendance,
 }) {
   const [expandedWorker, setExpandedWorker] = useState(null);
+  const [expandedWageRow, setExpandedWageRow] = useState(null);
   const [expandedContract, setExpandedContract] = useState(null);
   const [quickAttend, setQuickAttend] = useState({ contractId: "", date: todayStr(), headcount: 1, note: "" });
   const [openMonths, setOpenMonths] = useState({});
@@ -2221,14 +2222,62 @@ function LaborTab({
           </thead>
           <tbody>
             {laborSummaryByWorker.length === 0 && (<tr><td colSpan={4}><Empty text="此區間尚無出工紀錄" /></td></tr>)}
-            {laborSummaryByWorker.map((r) => (
-              <tr key={r.workerId}>
-                <td>{workerById[r.workerId]?.name || "已刪除師傅"}</td>
-                <td className="right mono muted">{fmtMoney(workerById[r.workerId]?.dailyRate)}</td>
-                <td className="right mono">{fmtNum(r.days)} 天</td>
-                <td className="right mono strong">{fmtMoney(r.wage)}</td>
-              </tr>
-            ))}
+            {laborSummaryByWorker.map((r) => {
+              const isOpen = expandedWageRow === r.workerId;
+              const detailLogs = workLogs
+                .filter((l) => l.workerId === r.workerId)
+                .filter((l) => !laborRange.start || l.date >= laborRange.start)
+                .filter((l) => !laborRange.end || l.date <= laborRange.end)
+                .sort((a, b) => (a.date < b.date ? 1 : -1));
+              return (
+                <React.Fragment key={r.workerId}>
+                  <tr
+                    className="wel-row-clickable"
+                    onClick={() => setExpandedWageRow(isOpen ? null : r.workerId)}
+                  >
+                    <td>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        {workerById[r.workerId]?.name || "已刪除師傅"}
+                      </span>
+                    </td>
+                    <td className="right mono muted">{fmtMoney(workerById[r.workerId]?.dailyRate)}</td>
+                    <td className="right mono">{fmtNum(r.days)} 天</td>
+                    <td className="right mono strong">{fmtMoney(r.wage)}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={4} style={{ padding: 0 }}>
+                        <div className="wel-timeline-wrap">
+                          {detailLogs.length === 0 ? (
+                            <div className="muted" style={{ fontSize: 12 }}>此區間沒有出工明細</div>
+                          ) : (
+                            <table className="wel-table">
+                              <thead>
+                                <tr><th>日期</th><th>上下班時間</th><th className="right">天數</th><th>備註</th></tr>
+                              </thead>
+                              <tbody>
+                                {detailLogs.map((l) => (
+                                  <tr key={l.id}>
+                                    <td className="mono">{l.date}</td>
+                                    <td className="mono">
+                                      {l.startTime && l.endTime ? `${l.startTime} - ${l.endTime}` : "—"}
+                                      {l.overtimeHours > 0 ? <span className="muted" style={{ marginLeft: 6 }}>（加班 {l.overtimeHours} 小時）</span> : null}
+                                    </td>
+                                    <td className="right mono">{fmtNum(l.days)}</td>
+                                    <td className="muted">{l.note || "—"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -4201,6 +4250,8 @@ function StyleBlock() {
       .wel-table .right { text-align: right; }
       .wel-table .mono { font-family: var(--font-mono); }
       .wel-table .muted { color: var(--text-muted); }
+      .wel-row-clickable { cursor: pointer; }
+      .wel-row-clickable:hover { background: var(--surface2); }
       .wel-table .strong { font-weight: 600; color: var(--amber); }
       .wel-low { color: var(--red) !important; }
       .wel-tag { border: 1px solid var(--border); border-radius: 20px; padding: 2px 9px; font-size: 11.5px; white-space: nowrap; }
