@@ -119,6 +119,7 @@ export default function CheckinPage() {
         }
         .ckn-row { display: flex; gap: 12px; }
         .ckn-row > .ckn-field { flex: 1; min-width: 0; }
+        @media (max-width: 420px) { .ckn-row { flex-direction: column; gap: 16px; } }
         .ckn-preview {
           background: #232E3A; border: 1px solid #3A4453; border-radius: 10px; padding: 14px 16px;
           margin-bottom: 20px; font-size: 13.5px; display: flex; flex-direction: column; gap: 6px;

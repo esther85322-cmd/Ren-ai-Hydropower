@@ -1,7 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App.jsx";
-import CheckinPage from "./CheckinPage.jsx";
 
 const style = document.createElement("style");
 style.textContent = `
@@ -11,11 +9,16 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// 簡化打卡頁面：/checkin — 給不需要用到完整後台的人（例如只負責記出工的師傅/家人）
+// 簡化打卡頁面：/checkin — 給不需要用到完整後台的人（例如只負責記出工的師傅/家人）。
+// 用 dynamic import 讓這條路徑只下載打卡頁面自己的程式碼，不會把整個管理系統
+// （含 Excel/Word 匯出、圖表等大型套件）一起下載下來，開啟速度快很多。
 const isCheckin = window.location.pathname.replace(/\/+$/, "").endsWith("/checkin");
+const root = ReactDOM.createRoot(document.getElementById("root"));
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    {isCheckin ? <CheckinPage /> : <App />}
-  </React.StrictMode>
-);
+(isCheckin ? import("./CheckinPage.jsx") : import("./App.jsx")).then(({ default: Page }) => {
+  root.render(
+    <React.StrictMode>
+      <Page />
+    </React.StrictMode>
+  );
+});
