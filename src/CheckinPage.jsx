@@ -35,6 +35,7 @@ export default function CheckinPage() {
   const [loading, setLoading] = useState(true);
   const [workers, setWorkers] = useState([]);
   const [sites, setSites] = useState([DEFAULT_SITE]);
+  const [worklogs, setWorklogs] = useState([]);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(null);
   const [form, setForm] = useState({
@@ -47,11 +48,13 @@ export default function CheckinPage() {
 
   useEffect(() => {
     (async () => {
-      const [wk, st] = await Promise.all([
+      const [wk, st, wl] = await Promise.all([
         storageGet("workers", []),
         storageGet("sites", [DEFAULT_SITE]),
+        storageGet("worklogs", []),
       ]);
       setWorkers(wk);
+      setWorklogs(wl);
       const siteList = st && st.length ? st : [DEFAULT_SITE];
       setSites(siteList);
       // URL 可以帶 ?site=<id> 預先選好案場（方便針對單一案場分享固定連結），
@@ -68,6 +71,23 @@ export default function CheckinPage() {
   const selectedWorker = workers.find((w) => w.id === form.workerId);
   const selectedSite = sites.find((s) => s.id === form.siteId);
 
+  // 同一位師傅、同一天已經打過卡了 → 不新增一筆，而是修改原本那筆的時間。
+  const existingLog = form.workerId
+    ? worklogs.find((l) => l.workerId === form.workerId && l.date === form.date)
+    : null;
+
+  // 選了「已經打過卡」的師傅／日期時，把時間欄位帶出原本記錄的值，方便直接修改；
+  // 換成別的師傅或別的日期、且沒有重複時，則回到預設的 08:00-17:00。
+  useEffect(() => {
+    if (loading) return;
+    setForm((f) => ({
+      ...f,
+      start: existingLog?.startTime || "08:00",
+      end: existingLog?.endTime || "17:00",
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.workerId, form.date]);
+
   const [error, setError] = useState("");
 
   const submit = async (e) => {
@@ -82,20 +102,36 @@ export default function CheckinPage() {
       // fall back to an empty list — that would overwrite everyone else's
       // existing worklogs with just this one new record.
       const list = (await storageGetOrThrow("worklogs")) || [];
-      const rec = {
-        id: uid(),
-        workerId: form.workerId,
-        date: form.date,
-        days: result.days,
-        note: `打卡 ${form.start}-${form.end}${result.overtimeHours > 0 ? `，加班 ${result.overtimeHours} 小時` : ""}`,
-        siteId: form.siteId,
-        startTime: form.start,
-        endTime: form.end,
-        overtimeHours: result.overtimeHours,
-      };
-      const ok = await storageSet("worklogs", [rec, ...list]);
+      const note = `打卡 ${form.start}-${form.end}${result.overtimeHours > 0 ? `，加班 ${result.overtimeHours} 小時` : ""}`;
+      const matchIdx = list.findIndex((l) => l.workerId === form.workerId && l.date === form.date);
+      let next;
+      if (matchIdx >= 0) {
+        next = list.map((l, i) =>
+          i === matchIdx
+            ? { ...l, days: result.days, note, siteId: form.siteId, startTime: form.start, endTime: form.end, overtimeHours: result.overtimeHours }
+            : l
+        );
+      } else {
+        const rec = {
+          id: uid(),
+          workerId: form.workerId,
+          date: form.date,
+          days: result.days,
+          note,
+          siteId: form.siteId,
+          startTime: form.start,
+          endTime: form.end,
+          overtimeHours: result.overtimeHours,
+        };
+        next = [rec, ...list];
+      }
+      const ok = await storageSet("worklogs", next);
       if (!ok) throw new Error("write failed");
-      setDone({ workerName: selectedWorker?.name, siteName: selectedSite?.name, ...result, date: form.date });
+      setWorklogs(next);
+      setDone({
+        workerName: selectedWorker?.name, siteName: selectedSite?.name, ...result, date: form.date,
+        updated: matchIdx >= 0,
+      });
       setForm((f) => ({ ...f, workerId: "", date: todayStr(), start: "08:00", end: "17:00" }));
     } catch (err) {
       console.error("checkin submit failed", err);
@@ -132,6 +168,10 @@ export default function CheckinPage() {
         }
         .ckn-preview b { color: #E8A33D; font-family: monospace; }
         .ckn-warn { color: #C1543C; }
+        .ckn-note {
+          background: rgba(232,163,61,0.1); border: 1px solid rgba(232,163,61,0.35); color: #E8D2A8;
+          border-radius: 8px; padding: 10px 12px; font-size: 12.5px; margin-bottom: 16px;
+        }
         .ckn-btn {
           width: 100%; background: #E8A33D; color: #1C2530; border: none; border-radius: 8px;
           padding: 14px; font-size: 16px; font-weight: 600; cursor: pointer;
@@ -153,7 +193,7 @@ export default function CheckinPage() {
           <>
             {done && (
               <div className="ckn-done">
-                <div><CheckCircle2 size={16} style={{ verticalAlign: "-3px", marginRight: 6, color: "#6B9B6E" }} />已記錄！</div>
+                <div><CheckCircle2 size={16} style={{ verticalAlign: "-3px", marginRight: 6, color: "#6B9B6E" }} />{done.updated ? "已更新！" : "已記錄！"}</div>
                 <div>{done.siteName} · {done.workerName} · {done.date}</div>
                 <div>工作時數 <b>{done.hours}</b> 小時，出工 <b>{done.days}</b> 天{done.overtimeHours > 0 ? <>，加班 <b>{done.overtimeHours}</b> 小時</> : null}</div>
               </div>
@@ -176,6 +216,14 @@ export default function CheckinPage() {
                 <label>日期</label>
                 <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} required />
               </div>
+
+              {existingLog && (
+                <div className="ckn-note">
+                  {selectedWorker?.name} 在 {form.date} 已經打過卡了（{existingLog.startTime || "—"}-{existingLog.endTime || "—"}）。
+                  下面時間已經帶出原本的紀錄，直接改完送出就會更新這筆，不會變成兩筆。
+                </div>
+              )}
+
               <div className="ckn-row">
                 <div className="ckn-field">
                   <label>上班時間</label>
@@ -205,7 +253,7 @@ export default function CheckinPage() {
               ) : null}
 
               <button type="submit" className="ckn-btn" disabled={saving || !form.workerId || !form.siteId || !result || result.days <= 0}>
-                {saving ? "送出中…" : "送出打卡"}
+                {saving ? "送出中…" : existingLog ? "更新工時" : "送出打卡"}
               </button>
               {error && <div className="ckn-warn" style={{ marginTop: 10 }}>{error}</div>}
             </form>
