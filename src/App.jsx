@@ -4251,6 +4251,7 @@ function StyleBlock() {
 
       .wel-form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 14px; margin-bottom: 14px; }
       @media (max-width: 700px) { .wel-form-grid { grid-template-columns: 1fr 1fr; } .wel-form-grid-btn { grid-template-columns: 1fr !important; } }
+      @media (max-width: 480px) { .wel-form-grid { grid-template-columns: 1fr !important; } }
       .wel-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); min-width: 0; }
       .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 9px; font-family: var(--font-body); font-size: 13.5px; width: 100%; min-width: 0; }
       .wel-field input:focus, .wel-field select:focus { outline: none; border-color: var(--teal); }
