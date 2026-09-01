@@ -11,8 +11,7 @@ import {
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
   MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText
 } from "lucide-react";
-import { db, ensureSignedIn } from "./firebase";
-import { collection, getDocs, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, ensureSignedIn, FIRESTORE_BASE } from "./firebase";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -39,31 +38,43 @@ const fmtNum = (n) => {
   return Number.isInteger(v) ? v.toLocaleString("zh-TW") : v.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
 };
 
-// ---- Firestore-backed persistence layer ----
+// ---- Firestore-backed persistence layer (REST API) ----
 // Every piece of app data (orders, contracts, sites, ...) is stored as ONE document
-// in the "wel-data" collection, keyed by name — e.g. doc("wel-data/orders").
+// in the "wel-data" collection, keyed by name — e.g. wel-data/orders.
 // This mirrors the original key/value shape 1:1, so the rest of the app (which only
 // ever calls storageGet/storageSet) needed no other changes to move off the
 // Claude-artifact storage API and onto a real database.
+// Reads/writes go through Firestore's plain HTTPS REST API rather than the
+// firebase/firestore SDK, which routes even one-time reads through its
+// real-time "Watch" channel — that channel can take a long time to establish
+// on some networks. REST is a single ordinary HTTPS request per call.
 const COLLECTION = "wel-data";
 
+async function authHeader() {
+  await ensureSignedIn();
+  const token = await auth.currentUser.getIdToken();
+  return { Authorization: `Bearer ${token}` };
+}
+
 // Fetches every document in the collection in a single round trip, instead of
-// one getDoc() per key — used on initial load where all keys are needed at once,
-// since 17 separate reads is far slower than 1 read of the whole collection.
+// one request per key — used on initial load where all keys are needed at once.
 async function storageGetAll() {
   const byKey = {};
   try {
-    await ensureSignedIn();
-    const snap = await getDocs(collection(db, COLLECTION));
-    snap.forEach((d) => {
-      const raw = d.data()?.value;
-      if (raw === undefined) return;
+    const headers = await authHeader();
+    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}?pageSize=300`, { headers });
+    if (!res.ok) throw new Error(`list failed: ${res.status}`);
+    const data = await res.json();
+    for (const d of data.documents || []) {
+      const key = d.name.split("/").pop();
+      const raw = d.fields?.value?.stringValue;
+      if (raw === undefined) continue;
       try {
-        byKey[d.id] = JSON.parse(raw);
+        byKey[key] = JSON.parse(raw);
       } catch (e) {
-        console.error("parse failed", d.id, e);
+        console.error("parse failed", key, e);
       }
-    });
+    }
   } catch (e) {
     console.error("storage get all failed", e);
   }
@@ -72,12 +83,13 @@ async function storageGetAll() {
 
 async function storageGet(key, fallback) {
   try {
-    await ensureSignedIn();
-    const snap = await getDoc(doc(db, COLLECTION, key));
-    if (snap.exists() && snap.data().value !== undefined) {
-      return JSON.parse(snap.data().value);
-    }
-    return fallback;
+    const headers = await authHeader();
+    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}/${key}`, { headers });
+    if (res.status === 404) return fallback;
+    if (!res.ok) throw new Error(`get failed: ${res.status}`);
+    const data = await res.json();
+    const raw = data.fields?.value?.stringValue;
+    return raw === undefined ? fallback : JSON.parse(raw);
   } catch (e) {
     console.error("storage get failed", key, e);
     return fallback;
@@ -85,11 +97,18 @@ async function storageGet(key, fallback) {
 }
 async function storageSet(key, value) {
   try {
-    await ensureSignedIn();
-    await setDoc(doc(db, COLLECTION, key), {
-      value: JSON.stringify(value),
-      updatedAt: serverTimestamp(),
+    const headers = await authHeader();
+    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}/${key}`, {
+      method: "PATCH",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fields: {
+          value: { stringValue: JSON.stringify(value) },
+          updatedAt: { timestampValue: new Date().toISOString() },
+        },
+      }),
     });
+    if (!res.ok) throw new Error(`set failed: ${res.status}`);
     return true;
   } catch (e) {
     console.error("storage set failed", key, e);
@@ -2179,7 +2198,7 @@ function LaborTab({
       {/* Worker roster */}
       <div className="wel-card wel-form">
         <div className="wel-card-title"><Users size={14} /> 師傅名單（可隨時增減）</div>
-        <div className="wel-form-grid" style={{ gridTemplateColumns: "2fr 1fr auto" }}>
+        <div className="wel-form-grid wel-form-grid-btn" style={{ gridTemplateColumns: "2fr 1fr auto" }}>
           <Field label="師傅姓名">
             <input placeholder="例：陳師傅" value={newWorker.name} onChange={(e) => setNewWorker({ ...newWorker, name: e.target.value })} />
           </Field>
@@ -3660,7 +3679,7 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
         </div>
       </div>
       <div className="wel-card wel-form">
-        <div className="wel-form-grid" style={{ gridTemplateColumns: "1fr auto" }}>
+        <div className="wel-form-grid wel-form-grid-btn" style={{ gridTemplateColumns: "1fr auto" }}>
           <Field label="新增類別名稱">
             <input placeholder="例：消防管路" value={newCatName} onChange={(e) => setNewCatName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addCategory())} />
           </Field>
@@ -4179,7 +4198,9 @@ function StyleBlock() {
       .wel-profit-neg { color: var(--red); }
 
       .wel-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      @media (max-width: 860px) { .wel-grid2 { grid-template-columns: 1fr; } .wel-shell { flex-direction: column; } .wel-sidebar { width: 100%; flex-direction: row; align-items: center; padding: 10px 14px; flex-wrap: wrap; } .wel-nav { flex-direction: row; flex-wrap: wrap; } .wel-sidebar-foot { display: none; } .wel-brand { border-bottom: none; margin-bottom: 0; padding-bottom: 0; } .wel-back-to-sites { width: auto; margin-bottom: 0; flex-direction: row; align-items: center; gap: 6px; } .wel-back-label { display: none; } .wel-landing { padding: 24px 18px 40px; } .wel-landing-title { font-size: 22px; } }
+      @media (max-width: 860px) { .wel-grid2 { grid-template-columns: 1fr; } .wel-shell { flex-direction: column; min-height: 0; } .wel-sidebar { width: 100%; flex-direction: row; align-items: center; padding: 10px 14px; flex-wrap: wrap; } .wel-nav { flex-direction: row; flex-wrap: wrap; } .wel-navbtn { width: auto; } .wel-sidebar-foot { display: none; } .wel-brand { border-bottom: none; margin-bottom: 0; padding-bottom: 0; } .wel-back-to-sites { width: auto; margin-bottom: 0; flex-direction: row; align-items: center; gap: 6px; } .wel-back-label { display: none; } .wel-landing { padding: 24px 18px 40px; } .wel-landing-title { font-size: 22px; } .wel-main { max-height: none; overflow-y: visible; padding: 18px 14px 32px; } .wel-template-rows { overflow-x: auto; padding-bottom: 4px; } .wel-template-row, .wel-template-row-3, .wel-template-row-4, .wel-template-row-5, .wel-template-row-item { min-width: 480px; } }
+      html, body { overflow-x: hidden; max-width: 100%; }
+      .wel-app { overflow-x: hidden; max-width: 100vw; }
 
       .wel-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 18px 16px; }
       .wel-card-title { display: flex; align-items: center; gap: 6px; font-family: var(--font-display); font-size: 14px; font-weight: 500; letter-spacing: 0.02em; color: var(--text); margin-bottom: 14px; text-transform: uppercase; }
@@ -4228,7 +4249,7 @@ function StyleBlock() {
       .wel-manager-mini { width: 74px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-mono); }
 
       .wel-form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 14px; margin-bottom: 14px; }
-      @media (max-width: 700px) { .wel-form-grid { grid-template-columns: 1fr 1fr; } }
+      @media (max-width: 700px) { .wel-form-grid { grid-template-columns: 1fr 1fr; } .wel-form-grid-btn { grid-template-columns: 1fr !important; } }
       .wel-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); }
       .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 9px; font-family: var(--font-body); font-size: 13.5px; }
       .wel-field input:focus, .wel-field select:focus { outline: none; border-color: var(--teal); }

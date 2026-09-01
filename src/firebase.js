@@ -19,12 +19,16 @@ const firebaseConfig = {
 };
 
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
 export const auth = getAuth(app);
+
+// 資料讀寫改用 Firestore 的 REST API（一般 HTTPS 請求），不透過
+// firebase/firestore SDK 的即時串流連線（WebChannel）。這個 app 只需要
+// 「打開時讀一次、存檔時寫一次」，不需要即時同步，改用 REST 可以避開
+// SDK 在某些網路環境下建立即時連線會卡住的問題。
+export const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
 
 // 用「匿名登入」讓 Firestore 安全規則可以要求 request.auth != null，
 // 同時使用者完全不需要自己輸入帳號密碼——第一次打開網頁時會自動、無聲地登入。
