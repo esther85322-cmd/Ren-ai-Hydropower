@@ -4225,7 +4225,7 @@ function StyleBlock() {
       .wel-discussion-topic { flex: 1; font-size: 13.5px; font-weight: 500; }
       .wel-discussion-note { font-size: 12.5px; padding-left: 27px; }
       .wel-discussion-result { display: flex; align-items: center; gap: 8px; padding-left: 27px; }
-      .wel-discussion-result input { flex: 1; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; font-family: var(--font-body); }
+      .wel-discussion-result input { flex: 1; min-width: 0; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; font-family: var(--font-body); }
       .wel-discussion-result input:disabled { opacity: 0.5; cursor: not-allowed; }
       .wel-chip { background: rgba(193,84,60,0.15); border: 1px solid rgba(193,84,60,0.4); color: #E8B4A8; font-size: 12px; padding: 4px 9px; border-radius: 20px; font-family: var(--font-mono); }
       .wel-item-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
@@ -4238,20 +4238,21 @@ function StyleBlock() {
 
       .wel-material-manager { margin-top: 10px; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; gap: 10px; }
       .wel-material-add-row { display: flex; gap: 8px; }
-      .wel-material-add-row input { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; font-family: var(--font-body); flex: 1; }
+      .wel-material-add-row { flex-wrap: wrap; }
+      .wel-material-add-row input { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; font-family: var(--font-body); flex: 1; min-width: 90px; }
       .wel-material-chips { display: flex; flex-wrap: wrap; gap: 6px; }
       .wel-chip-material { display: inline-flex; align-items: center; gap: 5px; background: rgba(232,163,61,0.12); border: 1px solid rgba(232,163,61,0.35); color: #E8D2A8; }
       .wel-chip-material button { background: transparent; border: none; color: inherit; cursor: pointer; display: inline-flex; opacity: 0.7; padding: 0; }
       .wel-chip-material button:hover { opacity: 1; }
       .wel-manager-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
-      .wel-manager-row { display: flex; align-items: center; gap: 6px; }
-      .wel-manager-name { flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-body); }
-      .wel-manager-mini { width: 74px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-mono); }
+      .wel-manager-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .wel-manager-name { flex: 1; min-width: 70px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-body); }
+      .wel-manager-mini { width: 74px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-mono); }
 
       .wel-form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 14px; margin-bottom: 14px; }
       @media (max-width: 700px) { .wel-form-grid { grid-template-columns: 1fr 1fr; } .wel-form-grid-btn { grid-template-columns: 1fr !important; } }
-      .wel-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); }
-      .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 9px; font-family: var(--font-body); font-size: 13.5px; }
+      .wel-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); min-width: 0; }
+      .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 9px; font-family: var(--font-body); font-size: 13.5px; width: 100%; min-width: 0; }
       .wel-field input:focus, .wel-field select:focus { outline: none; border-color: var(--teal); }
       .wel-amount-preview { font-family: var(--font-mono); font-weight: 600; color: var(--amber); padding: 8px 0; font-size: 14px; }
 
@@ -4390,7 +4391,7 @@ function StyleBlock() {
       .wel-no-spinner::-webkit-outer-spin-button, .wel-no-spinner::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       .wel-no-spinner { -moz-appearance: textfield; appearance: textfield; }
       .wel-new-type-row { display: flex; gap: 8px; align-items: center; }
-      .wel-new-type-row input { flex: 1; background: var(--surface); border: 1px solid var(--teal); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; }
+      .wel-new-type-row input { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--teal); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; }
       .wel-item-floor-apply { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
       .wel-item-floor-apply label { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); }
       .wel-item-floor-apply input { width: 52px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 7px; font-size: 12px; }
