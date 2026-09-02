@@ -1517,6 +1517,8 @@ export default function WaterElectricLedger() {
               isAllSites={isAllSites}
               sites={sites}
               setCurrentSiteId={setCurrentSiteId}
+              currentSiteId={currentSiteId}
+              showToast={showToast}
             />
           )}
         </main>
@@ -3792,7 +3794,17 @@ function OrderTimeline({ items }) {
 function DiscussionTab({
   discussionItems, siteById, discussionForm, setDiscussionForm, submitDiscussion,
   toggleDiscussionResolved, updateDiscussionResult, deleteDiscussion, isAllSites, sites, setCurrentSiteId,
+  currentSiteId, showToast,
 }) {
+  const copyShareLink = async () => {
+    const url = `${window.location.origin}/tasks?site=${currentSiteId}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("連結已複製，可以直接分享出去");
+    } catch (e) {
+      showToast(url);
+    }
+  };
   const [filter, setFilter] = useState("all"); // all | open | resolved
   const filtered = discussionItems.filter((d) => {
     if (filter === "open") return !d.resolved;
@@ -3819,12 +3831,17 @@ function DiscussionTab({
           <h1 className="wel-h1">備註討論項目</h1>
         </div>
         <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
-        <div className="wel-filter">
-          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-            <option value="all">全部（{discussionItems.length}）</option>
-            <option value="open">待處理（{openCount}）</option>
-            <option value="resolved">已有結果（{discussionItems.length - openCount}）</option>
-          </select>
+        <div className="wel-export-bar">
+          <button type="button" className="wel-export-btn" onClick={copyShareLink} disabled={isAllSites}>
+            <Copy size={13} /> 分享連結
+          </button>
+          <div className="wel-filter">
+            <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+              <option value="all">全部（{discussionItems.length}）</option>
+              <option value="open">待處理（{openCount}）</option>
+              <option value="resolved">已有結果（{discussionItems.length - openCount}）</option>
+            </select>
+          </div>
         </div>
       </div>
 
