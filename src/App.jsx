@@ -9,7 +9,7 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll } from "./storage";
 
@@ -148,6 +148,8 @@ export default function WaterElectricLedger() {
   const [contractWorkLogs, setContractWorkLogs] = useState([]);
   const [contractItems, setContractItems] = useState([]);
   const [discussionItems, setDiscussionItems] = useState([]);
+  const [capitalContributions, setCapitalContributions] = useState([]);
+  const [fixedAssets, setFixedAssets] = useState([]);
 
   // ---- load ----
   useEffect(() => {
@@ -170,6 +172,8 @@ export default function WaterElectricLedger() {
       const ci = data.contractitems ?? [];
       const mi = data.materialitems ?? [];
       const sup = data.suppliers ?? [];
+      const cc = data.capitalcontributions ?? [];
+      const fa = data.fixedassets ?? [];
       const siteList = st && st.length ? st : [DEFAULT_SITE];
       const fallbackSiteId = siteList[0].id;
       // migrate legacy records created before 案場 (site) existed
@@ -195,6 +199,8 @@ export default function WaterElectricLedger() {
       setContractItems(ci);
       setMaterialItems(mi);
       setSuppliers(sup);
+      setCapitalContributions(cc);
+      setFixedAssets(fa);
       setLoading(false);
       if (!ok) {
         // The read itself failed (network/auth hiccup) — do NOT run any of the
@@ -288,6 +294,16 @@ export default function WaterElectricLedger() {
     await storageSet("discussionitems", list);
     setSaving(false);
   }, []);
+  const persistCapitalContributions = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("capitalcontributions", list);
+    setSaving(false);
+  }, []);
+  const persistFixedAssets = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("fixedassets", list);
+    setSaving(false);
+  }, []);
   const persistContractItems = useCallback(async (list) => {
     setSaving(true);
     await storageSet("contractitems", list);
@@ -376,6 +392,22 @@ export default function WaterElectricLedger() {
   const openDiscussionCount = useMemo(
     () => siteDiscussionItems.filter((d) => !d.resolved).length,
     [siteDiscussionItems]
+  );
+  const siteCapitalContributions = useMemo(
+    () => (isAllSites ? capitalContributions : capitalContributions.filter((c) => c.siteId === currentSiteId)),
+    [capitalContributions, currentSiteId, isAllSites]
+  );
+  const capitalTotal = useMemo(
+    () => siteCapitalContributions.reduce((s, c) => s + (Number(c.amount) || 0), 0),
+    [siteCapitalContributions]
+  );
+  const siteFixedAssets = useMemo(
+    () => (isAllSites ? fixedAssets : fixedAssets.filter((f) => f.siteId === currentSiteId)),
+    [fixedAssets, currentSiteId, isAllSites]
+  );
+  const fixedAssetsTotal = useMemo(
+    () => siteFixedAssets.reduce((s, f) => s + (Number(f.amount) || 0) * (Number(f.quantity) || 1), 0),
+    [siteFixedAssets]
   );
   const attendanceByContract = useMemo(() => {
     const map = {};
@@ -555,7 +587,7 @@ export default function WaterElectricLedger() {
 
   const siteBreakdown = useMemo(() => {
     const map = {};
-    sites.forEach((s) => (map[s.id] = { id: s.id, name: s.name, material: 0, labor: 0, contract: 0, collected: 0 }));
+    sites.forEach((s) => (map[s.id] = { id: s.id, name: s.name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0 }));
     orders.forEach((o) => {
       if (!map[o.siteId]) return;
       map[o.siteId].material += Number(o.amount) || 0;
@@ -572,13 +604,17 @@ export default function WaterElectricLedger() {
       if (!map[p.siteId]) return;
       map[p.siteId].collected += Number(p.amount) || 0;
     });
+    capitalContributions.forEach((c) => {
+      if (!map[c.siteId]) return;
+      map[c.siteId].capital += Number(c.amount) || 0;
+    });
     return Object.values(map)
       .map((s) => ({ ...s, total: s.material + s.labor + s.contract, profit: s.collected - (s.material + s.labor + s.contract) }))
       .sort((a, b) => b.total - a.total);
-  }, [sites, orders, workLogs, workerById, payments, clientPayments]);
+  }, [sites, orders, workLogs, workerById, payments, clientPayments, capitalContributions]);
 
   // ---- forms ----
-  const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true };
+  const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
   const emptyUsage = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", quantity: "", unit: "", location: "" };
   const [orderForm, setOrderForm] = useState(emptyOrder);
   const [usageForm, setUsageForm] = useState(emptyUsage);
@@ -594,6 +630,10 @@ export default function WaterElectricLedger() {
   const [clientPaymentForm, setClientPaymentForm] = useState(emptyClientPayment);
   const emptyDiscussion = { date: todayStr(), topic: "", note: "", resolved: false, result: "" };
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
+  const emptyCapitalContribution = { date: todayStr(), amount: "", note: "" };
+  const [capitalForm, setCapitalForm] = useState(emptyCapitalContribution);
+  const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr() };
+  const [fixedAssetForm, setFixedAssetForm] = useState(emptyFixedAsset);
 
   useEffect(() => {
     setWorkLogForm((f) => ({ ...f, workerId: f.workerId || workers[0]?.id || "" }));
@@ -955,6 +995,49 @@ export default function WaterElectricLedger() {
     persistClientPayments(next);
   };
 
+  // ---- 投入成本 (capital contributions) ----
+  const submitCapitalContribution = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增投入成本紀錄"); return; }
+    if (!capitalForm.amount) {
+      showToast("請填寫「金額」後再新增投入成本紀錄");
+      return;
+    }
+    const rec = { id: uid(), ...capitalForm, siteId: currentSiteId, amount: Number(capitalForm.amount) };
+    const next = [rec, ...capitalContributions];
+    setCapitalContributions(next);
+    persistCapitalContributions(next);
+    setCapitalForm(emptyCapitalContribution);
+  };
+  const deleteCapitalContribution = (id) => {
+    const next = capitalContributions.filter((c) => c.id !== id);
+    setCapitalContributions(next);
+    persistCapitalContributions(next);
+  };
+
+  // ---- 固定資產 (fixed assets / tools inventory) ----
+  const submitFixedAsset = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增固定資產"); return; }
+    if (!fixedAssetForm.name.trim()) {
+      showToast("請填寫「工具名稱」後再新增固定資產");
+      return;
+    }
+    const rec = {
+      id: uid(), ...fixedAssetForm, siteId: currentSiteId,
+      quantity: Number(fixedAssetForm.quantity) || 1, amount: Number(fixedAssetForm.amount) || 0,
+    };
+    const next = [rec, ...fixedAssets];
+    setFixedAssets(next);
+    persistFixedAssets(next);
+    setFixedAssetForm(emptyFixedAsset);
+  };
+  const deleteFixedAsset = (id) => {
+    const next = fixedAssets.filter((f) => f.id !== id);
+    setFixedAssets(next);
+    persistFixedAssets(next);
+  };
+
   // ---- 甲方樓層請款項目 (client-side billing items — same design as contractor: item -> floor -> percent) ----
   const addClientTemplateRow = (siteId, name, amount) => {
     const nm = (name || "").trim();
@@ -1279,6 +1362,8 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<ListOrdered size={16} />} label="項目總表" active={tab === "summary"} onClick={() => setTab("summary")} />
             <NavBtn icon={<MessageSquare size={16} />} label="備註討論" active={tab === "discussion"} onClick={() => setTab("discussion")} />
             <NavBtn icon={<Wallet size={16} />} label="甲方收款" active={tab === "client"} onClick={() => setTab("client")} />
+            <NavBtn icon={<PiggyBank size={16} />} label="投入成本" active={tab === "capital"} onClick={() => setTab("capital")} />
+            <NavBtn icon={<Hammer size={16} />} label="固定資產" active={tab === "assets"} onClick={() => setTab("assets")} />
             <NavBtn icon={<LayoutDashboard size={16} />} label="儀表板" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
           </nav>
           <div className="wel-sidebar-foot">
@@ -1519,6 +1604,34 @@ export default function WaterElectricLedger() {
               setCurrentSiteId={setCurrentSiteId}
               currentSiteId={currentSiteId}
               showToast={showToast}
+            />
+          )}
+          {tab === "capital" && (
+            <CapitalTab
+              capitalContributions={siteCapitalContributions}
+              siteById={siteById}
+              capitalForm={capitalForm}
+              setCapitalForm={setCapitalForm}
+              submitCapitalContribution={submitCapitalContribution}
+              deleteCapitalContribution={deleteCapitalContribution}
+              capitalTotal={capitalTotal}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
+            />
+          )}
+          {tab === "assets" && (
+            <FixedAssetsTab
+              fixedAssets={siteFixedAssets}
+              siteById={siteById}
+              fixedAssetForm={fixedAssetForm}
+              setFixedAssetForm={setFixedAssetForm}
+              submitFixedAsset={submitFixedAsset}
+              deleteFixedAsset={deleteFixedAsset}
+              fixedAssetsTotal={fixedAssetsTotal}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
             />
           )}
         </main>
@@ -1766,16 +1879,17 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
     setOrderForm({ ...orderForm, supplier: val });
   };
 
+  const taxOf = (o) => (o.hasInvoice && o.applyTax ? (Number(o.amount) || 0) * (Number(o.taxRate) || 0) / 100 : 0);
   const exportRows = () => filteredOrders.map((o) => ({
     日期: o.date, 類別: catById[o.categoryId]?.name || "", 品項: o.itemName, 廠商: o.supplier || "",
     數量: Number(o.quantity) || 0, 單位: o.unit || "", 單價: Number(o.unitPrice) || 0, 金額: Number(o.amount) || 0,
-    發票: o.hasInvoice ? "有發票" : "無發票", 備註: o.note || "",
+    發票: o.hasInvoice ? "有發票" : "無發票", 稅額: taxOf(o), 備註: o.note || "",
   }));
   const handleExportExcel = () => exportExcel("叫貨紀錄", [{ name: "叫貨紀錄", rows: exportRows() }]);
   const handleExportWord = () => exportWord("叫貨紀錄", "叫貨紀錄", [{
     title: "叫貨紀錄",
-    headers: ["日期", "類別", "品項", "廠商", "數量", "單位", "單價", "金額", "發票", "備註"],
-    rows: filteredOrders.map((o) => [o.date, catById[o.categoryId]?.name || "", o.itemName, o.supplier || "", o.quantity, o.unit || "", fmtMoney(o.unitPrice), fmtMoney(o.amount), o.hasInvoice ? "有發票" : "無發票", o.note || ""]),
+    headers: ["日期", "類別", "品項", "廠商", "數量", "單位", "單價", "金額", "發票", "稅額", "備註"],
+    rows: filteredOrders.map((o) => [o.date, catById[o.categoryId]?.name || "", o.itemName, o.supplier || "", o.quantity, o.unit || "", fmtMoney(o.unitPrice), fmtMoney(o.amount), o.hasInvoice ? "有發票" : "無發票", taxOf(o) ? fmtMoney(taxOf(o)) : "—", o.note || ""]),
   }]);
 
   return (
@@ -1893,6 +2007,37 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
               <option value="no">無發票</option>
             </select>
           </Field>
+          {orderForm.hasInvoice && (
+            <Field label="營業稅" wide>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={orderForm.applyTax}
+                    onChange={(e) => setOrderForm({ ...orderForm, applyTax: e.target.checked })}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  計算稅額
+                </label>
+                {orderForm.applyTax && (
+                  <>
+                    <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                      稅率
+                      <input
+                        type="number" min="0" step="0.1" value={orderForm.taxRate}
+                        onChange={(e) => setOrderForm({ ...orderForm, taxRate: e.target.value })}
+                        style={{ width: 60, height: 32 }}
+                      />
+                      %
+                    </span>
+                    <span className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
+                      稅額：{fmtMoney((amount * (Number(orderForm.taxRate) || 0)) / 100)}
+                    </span>
+                  </>
+                )}
+              </div>
+            </Field>
+          )}
           <Field label="備註" wide>
             <input placeholder="選填" value={orderForm.note} onChange={(e) => setOrderForm({ ...orderForm, note: e.target.value })} />
           </Field>
@@ -1945,6 +2090,11 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                             {o.hasInvoice
                               ? <span className="wel-chip-info">有發票</span>
                               : <span className="wel-chip">無發票</span>}
+                            {o.hasInvoice && o.applyTax && (
+                              <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>
+                                稅額 {fmtMoney((Number(o.amount) || 0) * (Number(o.taxRate) || 0) / 100)}（{fmtNum(o.taxRate)}%）
+                              </div>
+                            )}
                           </td>
                           <td><button className="wel-icon-btn" onClick={() => deleteOrder(o.id)}><Trash2 size={14} /></button></td>
                         </tr>
@@ -3930,6 +4080,149 @@ function DiscussionTab({
   );
 }
 
+function CapitalTab({
+  capitalContributions, siteById, capitalForm, setCapitalForm, submitCapitalContribution, deleteCapitalContribution,
+  capitalTotal, isAllSites, sites, setCurrentSiteId,
+}) {
+  const handleExportExcel = () => exportExcel("投入成本", [
+    { name: "投入成本", rows: capitalContributions.map((c) => ({ 日期: c.date, 金額: Number(c.amount) || 0, 備註: c.note || "" })) },
+  ]);
+  const handleExportWord = () => exportWord("投入成本", "投入成本紀錄", [
+    { title: "投入成本紀錄", headers: ["日期", "金額", "備註"], rows: capitalContributions.map((c) => [c.date, fmtMoney(c.amount), c.note || ""]) },
+  ]);
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">資金 · CAPITAL CONTRIBUTIONS</div>
+          <h1 className="wel-h1">投入成本</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增投入成本紀錄" />}
+
+      <div className="wel-meter-card">
+        <div className="wel-meter-label"><PiggyBank size={14} /> 累計投入成本</div>
+        <div className="wel-meter-sub" style={{ marginTop: 0 }}>
+          <span>不計入材料／人工／發包總支出，單純記錄自己投入這個案場的資金</span>
+        </div>
+        <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--teal)" }}>{fmtMoney(capitalTotal)}</div>
+      </div>
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><PiggyBank size={14} /> 新增投入成本</div>
+        <div className="wel-form-grid">
+          <Field label="日期">
+            <input type="date" value={capitalForm.date} onChange={(e) => setCapitalForm({ ...capitalForm, date: e.target.value })} />
+          </Field>
+          <Field label="金額">
+            <input type="number" min="0" step="any" value={capitalForm.amount} onChange={(e) => setCapitalForm({ ...capitalForm, amount: e.target.value })} />
+          </Field>
+          <Field label="備註" wide>
+            <input placeholder="選填，例：開工前先墊付材料款" value={capitalForm.note} onChange={(e) => setCapitalForm({ ...capitalForm, note: e.target.value })} />
+          </Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submitCapitalContribution}><Plus size={15} /> 新增投入成本</button>
+      </div>
+
+      <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
+        <table className="wel-table">
+          <thead>
+            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th className="right">金額</th><th>備註</th><th></th></tr>
+          </thead>
+          <tbody>
+            {capitalContributions.length === 0 && (<tr><td colSpan={isAllSites ? 4 : 3}><Empty text="尚無投入成本紀錄" /></td></tr>)}
+            {capitalContributions.map((c) => (
+              <tr key={c.id}>
+                {isAllSites && <td className="muted">{siteById[c.siteId]?.name || "—"}</td>}
+                <td className="mono">{c.date}</td>
+                <td className="right mono strong" style={{ color: "var(--teal)" }}>{fmtMoney(c.amount)}</td>
+                <td className="muted">{c.note || "—"}</td>
+                <td><button className="wel-icon-btn" onClick={() => deleteCapitalContribution(c.id)}><Trash2 size={14} /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function FixedAssetsTab({
+  fixedAssets, siteById, fixedAssetForm, setFixedAssetForm, submitFixedAsset, deleteFixedAsset,
+  fixedAssetsTotal, isAllSites, sites, setCurrentSiteId,
+}) {
+  const handleExportExcel = () => exportExcel("固定資產", [
+    { name: "固定資產清單", rows: fixedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 購買日期: f.date })) },
+  ]);
+  const handleExportWord = () => exportWord("固定資產", "固定資產清點清單", [
+    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "購買日期"], rows: fixedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.date]) },
+  ]);
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">資產 · FIXED ASSETS</div>
+          <h1 className="wel-h1">固定資產清點</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增固定資產" />}
+
+      <div className="wel-meter-card">
+        <div className="wel-meter-label"><Hammer size={14} /> 固定資產總值</div>
+        <div className="wel-meter-sub" style={{ marginTop: 0 }}>
+          <span>生財工具、設備清點，不計入材料／人工／發包總支出</span>
+        </div>
+        <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--amber)" }}>{fmtMoney(fixedAssetsTotal)}</div>
+      </div>
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><Hammer size={14} /> 新增固定資產</div>
+        <div className="wel-form-grid">
+          <Field label="工具名稱" wide>
+            <input placeholder="例：電鑽、鷹架、廂型車" value={fixedAssetForm.name} onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, name: e.target.value })} />
+          </Field>
+          <Field label="數量">
+            <input type="number" min="1" step="1" value={fixedAssetForm.quantity} onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, quantity: e.target.value })} />
+          </Field>
+          <Field label="購買金額">
+            <input type="number" min="0" step="any" value={fixedAssetForm.amount} onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, amount: e.target.value })} />
+          </Field>
+          <Field label="購買日期">
+            <input type="date" value={fixedAssetForm.date} onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, date: e.target.value })} />
+          </Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submitFixedAsset}><Plus size={15} /> 新增固定資產</button>
+      </div>
+
+      <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
+        <table className="wel-table">
+          <thead>
+            <tr>{isAllSites && <th>案場</th>}<th>工具名稱</th><th className="right">數量</th><th className="right">購買金額</th><th className="right">小計</th><th>購買日期</th><th></th></tr>
+          </thead>
+          <tbody>
+            {fixedAssets.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚無固定資產紀錄" /></td></tr>)}
+            {fixedAssets.map((f) => (
+              <tr key={f.id}>
+                {isAllSites && <td className="muted">{siteById[f.siteId]?.name || "—"}</td>}
+                <td>{f.name}</td>
+                <td className="right mono">{fmtNum(f.quantity)}</td>
+                <td className="right mono">{fmtMoney(f.amount)}</td>
+                <td className="right mono strong" style={{ color: "var(--amber)" }}>{fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0))}</td>
+                <td className="mono muted">{f.date}</td>
+                <td><button className="wel-icon-btn" onClick={() => deleteFixedAsset(f.id)}><Trash2 size={14} /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function SiteLandingPage({
   projectName, setProjectName, editingName, setEditingName, saveName,
   sites, addSite, renameSite, removeSite, siteBreakdown, onEnterSite,
@@ -3992,7 +4285,7 @@ function SiteLandingPage({
         )}
 
         {sites.map((s) => {
-          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0 };
+          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0 };
           const isEditing = editingId === s.id;
           return (
             <div
@@ -4027,6 +4320,9 @@ function SiteLandingPage({
                   <div className="wel-site-stats">
                     <div><span>甲方收款</span><b>{fmtMoney(stat.collected)}</b></div>
                     <div><span>{stat.profit >= 0 ? "毛利" : "虧損"}</span><b style={{ color: stat.profit >= 0 ? "var(--green)" : "var(--red)" }}>{stat.profit >= 0 ? "+" : ""}{fmtMoney(stat.profit)}</b></div>
+                  </div>
+                  <div className="wel-site-stats">
+                    <div><span>投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(stat.capital)}</b></div>
                   </div>
                   <div className="wel-site-actions">
                     <span className="wel-site-enter-hint">點擊進入案場 →</span>
