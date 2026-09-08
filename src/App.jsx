@@ -578,7 +578,7 @@ export default function WaterElectricLedger() {
   }, [sites, orders, workLogs, workerById, payments, clientPayments]);
 
   // ---- forms ----
-  const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "" };
+  const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true };
   const emptyUsage = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", quantity: "", unit: "", location: "" };
   const [orderForm, setOrderForm] = useState(emptyOrder);
   const [usageForm, setUsageForm] = useState(emptyUsage);
@@ -1741,6 +1741,11 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   const [newMaterial, setNewMaterial] = useState({ name: "", unit: "", defaultPrice: "" });
   const [newSupplier, setNewSupplier] = useState("");
   const [openOrderMonths, setOpenOrderMonths] = useState({});
+  const [invoiceFilter, setInvoiceFilter] = useState("all"); // all | yes | no
+  const filteredOrders = useMemo(
+    () => orders.filter((o) => (invoiceFilter === "all" ? true : invoiceFilter === "yes" ? !!o.hasInvoice : !o.hasInvoice)),
+    [orders, invoiceFilter]
+  );
   const sortedMaterials = useMemo(() => materialItems.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [materialItems]);
   const sortedSuppliers = useMemo(() => suppliers.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [suppliers]);
 
@@ -1761,15 +1766,16 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
     setOrderForm({ ...orderForm, supplier: val });
   };
 
-  const exportRows = () => orders.map((o) => ({
+  const exportRows = () => filteredOrders.map((o) => ({
     日期: o.date, 類別: catById[o.categoryId]?.name || "", 品項: o.itemName, 廠商: o.supplier || "",
-    數量: Number(o.quantity) || 0, 單位: o.unit || "", 單價: Number(o.unitPrice) || 0, 金額: Number(o.amount) || 0, 備註: o.note || "",
+    數量: Number(o.quantity) || 0, 單位: o.unit || "", 單價: Number(o.unitPrice) || 0, 金額: Number(o.amount) || 0,
+    發票: o.hasInvoice ? "有發票" : "無發票", 備註: o.note || "",
   }));
   const handleExportExcel = () => exportExcel("叫貨紀錄", [{ name: "叫貨紀錄", rows: exportRows() }]);
   const handleExportWord = () => exportWord("叫貨紀錄", "叫貨紀錄", [{
     title: "叫貨紀錄",
-    headers: ["日期", "類別", "品項", "廠商", "數量", "單位", "單價", "金額", "備註"],
-    rows: orders.map((o) => [o.date, catById[o.categoryId]?.name || "", o.itemName, o.supplier || "", o.quantity, o.unit || "", fmtMoney(o.unitPrice), fmtMoney(o.amount), o.note || ""]),
+    headers: ["日期", "類別", "品項", "廠商", "數量", "單位", "單價", "金額", "發票", "備註"],
+    rows: filteredOrders.map((o) => [o.date, catById[o.categoryId]?.name || "", o.itemName, o.supplier || "", o.quantity, o.unit || "", fmtMoney(o.unitPrice), fmtMoney(o.amount), o.hasInvoice ? "有發票" : "無發票", o.note || ""]),
   }]);
 
   return (
@@ -1881,6 +1887,12 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
           <Field label="小計">
             <div className="wel-amount-preview">{fmtMoney(amount)}</div>
           </Field>
+          <Field label="有無發票">
+            <select value={orderForm.hasInvoice ? "yes" : "no"} onChange={(e) => setOrderForm({ ...orderForm, hasInvoice: e.target.value === "yes" })}>
+              <option value="yes">有發票</option>
+              <option value="no">無發票</option>
+            </select>
+          </Field>
           <Field label="備註" wide>
             <input placeholder="選填" value={orderForm.note} onChange={(e) => setOrderForm({ ...orderForm, note: e.target.value })} />
           </Field>
@@ -1889,9 +1901,18 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
       </div>
 
       <div className="wel-card">
-        <div className="wel-card-title"><CalendarRange size={14} /> 叫貨紀錄（依年月點開查詢）</div>
-        {orders.length === 0 && <Empty text="尚未新增任何叫貨紀錄" />}
-        {attendanceByMonth(orders).map((mg) => {
+        <div className="wel-card-title-row">
+          <div className="wel-card-title"><CalendarRange size={14} /> 叫貨紀錄（依年月點開查詢）</div>
+          <div className="wel-filter">
+            <select value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value)}>
+              <option value="all">全部（{orders.length}）</option>
+              <option value="yes">有發票（{orders.filter((o) => o.hasInvoice).length}）</option>
+              <option value="no">無發票（{orders.filter((o) => !o.hasInvoice).length}）</option>
+            </select>
+          </div>
+        </div>
+        {filteredOrders.length === 0 && <Empty text="尚未新增任何叫貨紀錄" />}
+        {attendanceByMonth(filteredOrders).map((mg) => {
           const subtotal = mg.items.reduce((s, o) => s + (Number(o.amount) || 0), 0);
           const mOpen = !!openOrderMonths[mg.month];
           return (
@@ -1906,7 +1927,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                     <thead>
                       <tr>
                         {isAllSites && <th>案場</th>}
-                        <th>日期</th><th>類別</th><th>品項</th><th>廠商</th><th className="right">數量</th><th className="right">單價</th><th className="right">金額</th><th></th>
+                        <th>日期</th><th>類別</th><th>品項</th><th>廠商</th><th className="right">數量</th><th className="right">單價</th><th className="right">金額</th><th>發票</th><th></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1920,6 +1941,11 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                           <td className="right mono">{fmtNum(o.quantity)} {o.unit}</td>
                           <td className="right mono">{fmtMoney(o.unitPrice)}</td>
                           <td className="right mono strong">{fmtMoney(o.amount)}</td>
+                          <td>
+                            {o.hasInvoice
+                              ? <span className="wel-chip-info">有發票</span>
+                              : <span className="wel-chip">無發票</span>}
+                          </td>
                           <td><button className="wel-icon-btn" onClick={() => deleteOrder(o.id)}><Trash2 size={14} /></button></td>
                         </tr>
                       ))}
@@ -4200,6 +4226,8 @@ function StyleBlock() {
 
       .wel-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 18px 16px; }
       .wel-card-title { display: flex; align-items: center; gap: 6px; font-family: var(--font-display); font-size: 14px; font-weight: 500; letter-spacing: 0.02em; color: var(--text); margin-bottom: 14px; text-transform: uppercase; }
+      .wel-card-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+      .wel-card-title-row .wel-card-title { margin-bottom: 0; }
 
       .wel-pipes { display: flex; flex-direction: column; gap: 11px; }
       .wel-pipe-row { display: grid; grid-template-columns: 110px 1fr 88px; align-items: center; gap: 10px; }
