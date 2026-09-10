@@ -9,7 +9,7 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll } from "./storage";
 
@@ -654,7 +654,7 @@ export default function WaterElectricLedger() {
   const [capitalForm, setCapitalForm] = useState(emptyCapitalContribution);
   const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr() };
   const [fixedAssetForm, setFixedAssetForm] = useState(emptyFixedAsset);
-  const emptyOtherExpense = { date: todayStr(), itemName: "", amount: "", note: "" };
+  const emptyOtherExpense = { date: todayStr(), itemName: "", supplier: "", amount: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
   const [otherExpenseForm, setOtherExpenseForm] = useState(emptyOtherExpense);
 
   useEffect(() => {
@@ -710,6 +710,11 @@ export default function WaterElectricLedger() {
   };
   const deleteUsage = (id) => {
     const next = usages.filter((u) => u.id !== id);
+    setUsages(next);
+    persistUsages(next);
+  };
+  const updateUsage = (id, patch) => {
+    const next = usages.map((u) => (u.id === id ? { ...u, ...patch } : u));
     setUsages(next);
     persistUsages(next);
   };
@@ -794,9 +799,12 @@ export default function WaterElectricLedger() {
       const oldName = sup.name;
       const newName = patch.name.trim();
       const nextOrders = orders.map((o) => (o.supplier === oldName ? { ...o, supplier: newName } : o));
+      const nextOtherExpenses = otherExpenses.map((oe) => (oe.supplier === oldName ? { ...oe, supplier: newName } : oe));
       setOrders(nextOrders);
       persistOrders(nextOrders);
-      showToast(`已將廠商「${oldName}」更名為「${newName}」，並同步更新過去的叫貨紀錄`);
+      setOtherExpenses(nextOtherExpenses);
+      persistOtherExpenses(nextOtherExpenses);
+      showToast(`已將廠商「${oldName}」更名為「${newName}」，並同步更新過去的叫貨／其他支出紀錄`);
     }
   };
   const removeSupplier = (id) => {
@@ -843,6 +851,11 @@ export default function WaterElectricLedger() {
   };
   const deleteWorkLog = (id) => {
     const next = workLogs.filter((l) => l.id !== id);
+    setWorkLogs(next);
+    persistWorkLogs(next);
+  };
+  const updateWorkLog = (id, patch) => {
+    const next = workLogs.map((l) => (l.id === id ? { ...l, ...patch } : l));
     setWorkLogs(next);
     persistWorkLogs(next);
   };
@@ -897,6 +910,11 @@ export default function WaterElectricLedger() {
   };
   const deletePayment = (id) => {
     const next = payments.filter((p) => p.id !== id);
+    setPayments(next);
+    persistPayments(next);
+  };
+  const updatePayment = (id, patch) => {
+    const next = payments.map((p) => (p.id === id ? { ...p, ...patch } : p));
     setPayments(next);
     persistPayments(next);
   };
@@ -1014,6 +1032,11 @@ export default function WaterElectricLedger() {
     setClientPayments(next);
     persistClientPayments(next);
   };
+  const updateClientPayment = (id, patch) => {
+    const next = clientPayments.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    setClientPayments(next);
+    persistClientPayments(next);
+  };
 
   // ---- 投入成本 (capital contributions) ----
   const submitCapitalContribution = (e) => {
@@ -1031,6 +1054,11 @@ export default function WaterElectricLedger() {
   };
   const deleteCapitalContribution = (id) => {
     const next = capitalContributions.filter((c) => c.id !== id);
+    setCapitalContributions(next);
+    persistCapitalContributions(next);
+  };
+  const updateCapitalContribution = (id, patch) => {
+    const next = capitalContributions.map((c) => (c.id === id ? { ...c, ...patch } : c));
     setCapitalContributions(next);
     persistCapitalContributions(next);
   };
@@ -1057,6 +1085,11 @@ export default function WaterElectricLedger() {
     setFixedAssets(next);
     persistFixedAssets(next);
   };
+  const updateFixedAsset = (id, patch) => {
+    const next = fixedAssets.map((f) => (f.id === id ? { ...f, ...patch } : f));
+    setFixedAssets(next);
+    persistFixedAssets(next);
+  };
 
   // ---- 其他支出 (other expenses — counts toward project cost, but doesn't
   // touch 領料/庫存: item name can be picked from the material catalog for
@@ -1076,6 +1109,11 @@ export default function WaterElectricLedger() {
   };
   const deleteOtherExpense = (id) => {
     const next = otherExpenses.filter((e) => e.id !== id);
+    setOtherExpenses(next);
+    persistOtherExpenses(next);
+  };
+  const updateOtherExpense = (id, patch) => {
+    const next = otherExpenses.map((e) => (e.id === id ? { ...e, ...patch } : e));
     setOtherExpenses(next);
     persistOtherExpenses(next);
   };
@@ -1167,6 +1205,11 @@ export default function WaterElectricLedger() {
     setContractWorkLogs(next);
     persistContractWorkLogs(next);
   };
+  const updateAttendance = (id, patch) => {
+    const next = contractWorkLogs.map((l) => (l.id === id ? { ...l, ...patch } : l));
+    setContractWorkLogs(next);
+    persistContractWorkLogs(next);
+  };
 
   // ---- 發包項目明細 (a single contractor/vendor can carry multiple priced items, each with its own billing date) ----
   const addContractItem = (contractId, name, amount, date, note, percent, floor) => {
@@ -1240,6 +1283,11 @@ export default function WaterElectricLedger() {
   };
   const updateDiscussionResult = (id, result) => {
     const next = discussionItems.map((d) => (d.id === id ? { ...d, result } : d));
+    setDiscussionItems(next);
+    persistDiscussionItems(next);
+  };
+  const updateDiscussion = (id, patch) => {
+    const next = discussionItems.map((d) => (d.id === id ? { ...d, ...patch } : d));
     setDiscussionItems(next);
     persistDiscussionItems(next);
   };
@@ -1483,6 +1531,7 @@ export default function WaterElectricLedger() {
               setUsageForm={setUsageForm}
               submitUsage={submitUsage}
               deleteUsage={deleteUsage}
+              updateUsage={updateUsage}
               itemSuggestions={itemSuggestions}
               isAllSites={isAllSites}
               sites={sites}
@@ -1505,6 +1554,7 @@ export default function WaterElectricLedger() {
               setWorkLogForm={setWorkLogForm}
               submitWorkLog={submitWorkLog}
               deleteWorkLog={deleteWorkLog}
+              updateWorkLog={updateWorkLog}
               laborRange={laborRange}
               setLaborRange={setLaborRange}
               laborSummaryByWorker={laborSummaryByWorker}
@@ -1518,6 +1568,7 @@ export default function WaterElectricLedger() {
               contractRows={contractRows}
               addAttendance={addAttendance}
               deleteAttendance={deleteAttendance}
+              updateAttendance={updateAttendance}
             />
           )}
           {tab === "categories" && (
@@ -1549,6 +1600,7 @@ export default function WaterElectricLedger() {
               setPaymentForm={setPaymentForm}
               submitPayment={submitPayment}
               deletePayment={deletePayment}
+              updatePayment={updatePayment}
               contractPaidTotal={contractPaidTotal}
               contractTotalPrice={contractTotalPrice}
               isAllSites={isAllSites}
@@ -1563,6 +1615,7 @@ export default function WaterElectricLedger() {
               deleteFloorGroup={deleteFloorGroup}
               addAttendance={addAttendance}
               deleteAttendance={deleteAttendance}
+              updateAttendance={updateAttendance}
               contractWorkLogs={siteContractWorkLogs}
               contractItems={siteContractItems}
               addContractItem={addContractItem}
@@ -1586,6 +1639,7 @@ export default function WaterElectricLedger() {
               setClientPaymentForm={setClientPaymentForm}
               submitClientPayment={submitClientPayment}
               deleteClientPayment={deleteClientPayment}
+              updateClientPayment={updateClientPayment}
               clientPaidTotal={clientPaidTotal}
               projectGrandTotal={projectGrandTotal}
               profitLoss={profitLoss}
@@ -1642,6 +1696,7 @@ export default function WaterElectricLedger() {
               submitDiscussion={submitDiscussion}
               toggleDiscussionResolved={toggleDiscussionResolved}
               updateDiscussionResult={updateDiscussionResult}
+              updateDiscussion={updateDiscussion}
               deleteDiscussion={deleteDiscussion}
               isAllSites={isAllSites}
               sites={sites}
@@ -1658,6 +1713,7 @@ export default function WaterElectricLedger() {
               setCapitalForm={setCapitalForm}
               submitCapitalContribution={submitCapitalContribution}
               deleteCapitalContribution={deleteCapitalContribution}
+              updateCapitalContribution={updateCapitalContribution}
               capitalTotal={capitalTotal}
               isAllSites={isAllSites}
               sites={sites}
@@ -1672,6 +1728,7 @@ export default function WaterElectricLedger() {
               setFixedAssetForm={setFixedAssetForm}
               submitFixedAsset={submitFixedAsset}
               deleteFixedAsset={deleteFixedAsset}
+              updateFixedAsset={updateFixedAsset}
               fixedAssetsTotal={fixedAssetsTotal}
               isAllSites={isAllSites}
               sites={sites}
@@ -1686,11 +1743,17 @@ export default function WaterElectricLedger() {
               setOtherExpenseForm={setOtherExpenseForm}
               submitOtherExpense={submitOtherExpense}
               deleteOtherExpense={deleteOtherExpense}
+              updateOtherExpense={updateOtherExpense}
               otherExpensesTotal={otherExpensesTotal}
               materialItems={materialItems}
+              suppliers={suppliers}
+              addSupplier={addSupplier}
+              updateSupplier={updateSupplier}
+              removeSupplier={removeSupplier}
               isAllSites={isAllSites}
               sites={sites}
               setCurrentSiteId={setCurrentSiteId}
+              showToast={showToast}
             />
           )}
         </main>
@@ -2275,15 +2338,29 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   );
 }
 
-function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageForm, submitUsage, deleteUsage, itemSuggestions, isAllSites, sites, setCurrentSiteId }) {
+function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageForm, submitUsage, deleteUsage, updateUsage, itemSuggestions, isAllSites, sites, setCurrentSiteId }) {
+  const [expandedUsageId, setExpandedUsageId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const startEditUsage = (u) => {
+    setExpandedUsageId(u.id);
+    setEditDraft({ date: u.date, categoryId: u.categoryId, itemName: u.itemName, quantity: u.quantity, unit: u.unit || "", location: u.location || "" });
+  };
+  const cancelEditUsage = () => { setExpandedUsageId(null); setEditDraft(null); };
+  const saveEditUsage = (id) => {
+    if (!editDraft.itemName.trim() || !editDraft.quantity) return;
+    updateUsage(id, editDraft);
+    setExpandedUsageId(null);
+    setEditDraft(null);
+  };
+  const sortedUsages = useMemo(() => usages.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [usages]);
   const handleExportExcel = () => exportExcel("領用紀錄", [{
     name: "領用紀錄",
-    rows: usages.map((u) => ({ 日期: u.date, 類別: catById[u.categoryId]?.name || "", 品項: u.itemName, 數量: Number(u.quantity) || 0, 單位: u.unit || "", 工地位置: u.location || "" })),
+    rows: sortedUsages.map((u) => ({ 日期: u.date, 類別: catById[u.categoryId]?.name || "", 品項: u.itemName, 數量: Number(u.quantity) || 0, 單位: u.unit || "", 工地位置: u.location || "" })),
   }]);
   const handleExportWord = () => exportWord("領用紀錄", "領料 / 使用紀錄", [{
     title: "領料 / 使用紀錄",
     headers: ["日期", "類別", "品項", "數量", "單位", "工地位置"],
-    rows: usages.map((u) => [u.date, catById[u.categoryId]?.name || "", u.itemName, u.quantity, u.unit || "", u.location || ""]),
+    rows: sortedUsages.map((u) => [u.date, catById[u.categoryId]?.name || "", u.itemName, u.quantity, u.unit || "", u.location || ""]),
   }]);
   return (
     <div className="wel-page">
@@ -2330,18 +2407,62 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
             <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>類別</th><th>品項</th><th className="right">數量</th><th>工地 / 用途</th><th></th></tr>
           </thead>
           <tbody>
-            {usages.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚未新增任何領用紀錄" /></td></tr>)}
-            {usages.map((u) => (
-              <tr key={u.id}>
+            {sortedUsages.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚未新增任何領用紀錄" /></td></tr>)}
+            {sortedUsages.map((u) => {
+              const isOpen = expandedUsageId === u.id;
+              return (
+              <React.Fragment key={u.id}>
+              <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEditUsage() : startEditUsage(u))}>
                 {isAllSites && <td className="muted">{siteById[u.siteId]?.name || "—"}</td>}
                 <td className="mono">{u.date}</td>
                 <td><span className="wel-tag" style={{ borderColor: catById[u.categoryId]?.color }}>{catById[u.categoryId]?.name || "未分類"}</span></td>
-                <td>{u.itemName}</td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    {u.itemName}
+                  </span>
+                </td>
                 <td className="right mono">{fmtNum(u.quantity)} {u.unit}</td>
                 <td className="muted">{u.location || "—"}</td>
-                <td><button className="wel-icon-btn" onClick={() => deleteUsage(u.id)}><Trash2 size={14} /></button></td>
+                <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteUsage(u.id); }}><Trash2 size={14} /></button></td>
               </tr>
-            ))}
+              {isOpen && editDraft && (
+                <tr onClick={(e) => e.stopPropagation()}>
+                  <td colSpan={isAllSites ? 7 : 6} style={{ padding: 0 }}>
+                    <div className="wel-timeline-wrap">
+                      <div className="wel-form-grid">
+                        <Field label="日期">
+                          <input type="date" value={editDraft.date} onChange={(e) => setEditDraft({ ...editDraft, date: e.target.value })} />
+                        </Field>
+                        <Field label="類別">
+                          <select value={editDraft.categoryId} onChange={(e) => setEditDraft({ ...editDraft, categoryId: e.target.value })}>
+                            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="品項名稱">
+                          <input list="wel-items2" value={editDraft.itemName} onChange={(e) => setEditDraft({ ...editDraft, itemName: e.target.value })} />
+                        </Field>
+                        <Field label="使用數量">
+                          <input type="number" step="any" min="0" value={editDraft.quantity} onChange={(e) => setEditDraft({ ...editDraft, quantity: e.target.value })} />
+                        </Field>
+                        <Field label="單位">
+                          <input value={editDraft.unit} onChange={(e) => setEditDraft({ ...editDraft, unit: e.target.value })} />
+                        </Field>
+                        <Field label="工地 / 用途" wide>
+                          <input value={editDraft.location} onChange={(e) => setEditDraft({ ...editDraft, location: e.target.value })} />
+                        </Field>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className="wel-btn-primary" onClick={() => saveEditUsage(u.id)}>儲存修改</button>
+                        <button type="button" className="wel-btn-ghost" onClick={cancelEditUsage}>取消</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -2385,15 +2506,25 @@ function InventoryTab({ inventory, catById }) {
 
 function LaborTab({
   workers, workLogs, workerById, siteById, newWorker, setNewWorker, addWorker, updateWorkerRate, removeWorker,
-  workLogForm, setWorkLogForm, submitWorkLog, deleteWorkLog,
+  workLogForm, setWorkLogForm, submitWorkLog, deleteWorkLog, updateWorkLog,
   laborRange, setLaborRange, laborSummaryByWorker, laborRangeTotal, laborRangeDays, laborTotalAllTime, isAllSites, sites, setCurrentSiteId,
-  contractWorkLogs, contractRows, addAttendance, deleteAttendance,
+  contractWorkLogs, contractRows, addAttendance, deleteAttendance, updateAttendance,
 }) {
   const [expandedWorker, setExpandedWorker] = useState(null);
   const [expandedWageRow, setExpandedWageRow] = useState(null);
   const [expandedContract, setExpandedContract] = useState(null);
   const [quickAttend, setQuickAttend] = useState({ contractId: "", date: todayStr(), headcount: 1, note: "" });
   const [openMonths, setOpenMonths] = useState({});
+  const [editingLogId, setEditingLogId] = useState(null);
+  const [logDraft, setLogDraft] = useState(null);
+  const startEditLog = (l) => { setEditingLogId(l.id); setLogDraft({ date: l.date, days: l.days, note: l.note || "" }); };
+  const cancelEditLog = () => { setEditingLogId(null); setLogDraft(null); };
+  const saveEditLog = (id) => { updateWorkLog(id, { ...logDraft, days: Number(logDraft.days) || 0 }); setEditingLogId(null); setLogDraft(null); };
+  const [editingAttendId, setEditingAttendId] = useState(null);
+  const [attendDraft, setAttendDraft] = useState(null);
+  const startEditAttend = (l) => { setEditingAttendId(l.id); setAttendDraft({ date: l.date, headcount: l.headcount, note: l.note || "" }); };
+  const cancelEditAttend = () => { setEditingAttendId(null); setAttendDraft(null); };
+  const saveEditAttend = (id) => { updateAttendance(id, { ...attendDraft, headcount: Number(attendDraft.headcount) || 1 }); setEditingAttendId(null); setAttendDraft(null); };
   const toggleMonth = (key) => setOpenMonths((prev) => ({ ...prev, [key]: !prev[key] }));
   const rangeLabel = laborRange.start || laborRange.end
     ? `${laborRange.start || "最早"} ～ ${laborRange.end || "最新"}`
@@ -2657,12 +2788,22 @@ function LaborTab({
                         {mOpen && (
                           <div className="wel-template-rows">
                             {mg.items.map((l) => (
-                              <div key={l.id} className="wel-attendance-item">
-                                <span className="mono">{l.date}</span>
-                                <span className="mono muted">{fmtNum(l.days)} 天</span>
-                                <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
-                                <button className="wel-icon-btn" onClick={() => deleteWorkLog(l.id)}><X size={13} /></button>
-                              </div>
+                              editingLogId === l.id ? (
+                                <div key={l.id} className="wel-attendance-item">
+                                  <input type="date" value={logDraft.date} onChange={(e) => setLogDraft({ ...logDraft, date: e.target.value })} style={{ width: 130 }} />
+                                  <input type="number" min="0" step="0.5" value={logDraft.days} onChange={(e) => setLogDraft({ ...logDraft, days: e.target.value })} style={{ width: 60 }} />
+                                  <input placeholder="備註" value={logDraft.note} onChange={(e) => setLogDraft({ ...logDraft, note: e.target.value })} style={{ flex: 1 }} />
+                                  <button className="wel-icon-btn" onClick={() => saveEditLog(l.id)}><CheckCircle2 size={13} /></button>
+                                  <button className="wel-icon-btn" onClick={cancelEditLog}><X size={13} /></button>
+                                </div>
+                              ) : (
+                                <div key={l.id} className="wel-attendance-item wel-row-clickable" onClick={() => startEditLog(l)}>
+                                  <span className="mono">{l.date}</span>
+                                  <span className="mono muted">{fmtNum(l.days)} 天</span>
+                                  <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
+                                  <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteWorkLog(l.id); }}><X size={13} /></button>
+                                </div>
+                              )
                             ))}
                           </div>
                         )}
@@ -2723,12 +2864,22 @@ function LaborTab({
                         {mOpen && (
                           <div className="wel-template-rows">
                             {mg.items.map((l) => (
-                              <div key={l.id} className="wel-attendance-item">
-                                <span className="mono">{l.date}</span>
-                                <span className="mono muted">{l.headcount} 人</span>
-                                <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
-                                <button className="wel-icon-btn" onClick={() => deleteAttendance(l.id)}><X size={13} /></button>
-                              </div>
+                              editingAttendId === l.id ? (
+                                <div key={l.id} className="wel-attendance-item">
+                                  <input type="date" value={attendDraft.date} onChange={(e) => setAttendDraft({ ...attendDraft, date: e.target.value })} style={{ width: 130 }} />
+                                  <input type="number" min="1" step="1" value={attendDraft.headcount} onChange={(e) => setAttendDraft({ ...attendDraft, headcount: e.target.value })} style={{ width: 60 }} />
+                                  <input placeholder="備註" value={attendDraft.note} onChange={(e) => setAttendDraft({ ...attendDraft, note: e.target.value })} style={{ flex: 1 }} />
+                                  <button className="wel-icon-btn" onClick={() => saveEditAttend(l.id)}><CheckCircle2 size={13} /></button>
+                                  <button className="wel-icon-btn" onClick={cancelEditAttend}><X size={13} /></button>
+                                </div>
+                              ) : (
+                                <div key={l.id} className="wel-attendance-item wel-row-clickable" onClick={() => startEditAttend(l)}>
+                                  <span className="mono">{l.date}</span>
+                                  <span className="mono muted">{l.headcount} 人</span>
+                                  <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
+                                  <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteAttendance(l.id); }}><X size={13} /></button>
+                                </div>
+                              )
                             ))}
                           </div>
                         )}
@@ -2747,13 +2898,19 @@ function LaborTab({
 
 function ContractsTab({
   contractRows, payments, siteById, contractForm, setContractForm, submitContract, deleteContract,
-  paymentForm, setPaymentForm, submitPayment, deletePayment, contractPaidTotal, contractTotalPrice, isAllSites,
+  paymentForm, setPaymentForm, submitPayment, deletePayment, updatePayment, contractPaidTotal, contractTotalPrice, isAllSites,
   floorItems, addTemplateRow, updateTemplateRow, removeTemplateRow, applyTemplateToFloors,
   addFloorItem, updateFloorItem, deleteFloorItem, deleteFloorGroup,
-  addAttendance, deleteAttendance, contractWorkLogs, sites, setCurrentSiteId, showToast,
+  addAttendance, deleteAttendance, updateAttendance, contractWorkLogs, sites, setCurrentSiteId, showToast,
   contractItems, addContractItem, addContractItemsBatch, addPaymentFromItem, updateContractItem, deleteContractItem, deleteContractItemsByFloor, deleteContractItemsByName,
 }) {
   const [expandedId, setExpandedId] = useState(null);
+  const [expandedPaymentId, setExpandedPaymentId] = useState(null);
+  const [paymentDraft, setPaymentDraft] = useState(null);
+  const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, contractId: p.contractId, amount: p.amount, note: p.note || "" }); };
+  const cancelEditPayment = () => { setExpandedPaymentId(null); setPaymentDraft(null); };
+  const saveEditPayment = (id) => { updatePayment(id, { ...paymentDraft, amount: Number(paymentDraft.amount) || 0 }); setExpandedPaymentId(null); setPaymentDraft(null); };
+  const sortedPayments = useMemo(() => payments.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [payments]);
 
   const vendorGroups = useMemo(() => {
     const map = {};
@@ -2901,6 +3058,7 @@ function ContractsTab({
                     deleteFloorGroup={deleteFloorGroup}
                     addAttendance={addAttendance}
                     deleteAttendance={deleteAttendance}
+                    updateAttendance={updateAttendance}
                     contractWorkLogs={contractWorkLogs.filter((l) => l.contractId === c.id)}
                     contractItems={contractItems.filter((it) => it.contractId === c.id)}
                     addContractItem={addContractItem}
@@ -2951,18 +3109,54 @@ function ContractsTab({
             <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>發包項目</th><th className="right">金額</th><th>備註</th><th></th></tr>
           </thead>
           <tbody>
-            {payments.length === 0 && (<tr><td colSpan={isAllSites ? 6 : 5}><Empty text="尚無領款紀錄" /></td></tr>)}
-            {payments.map((p) => {
+            {sortedPayments.length === 0 && (<tr><td colSpan={isAllSites ? 6 : 5}><Empty text="尚無領款紀錄" /></td></tr>)}
+            {sortedPayments.map((p) => {
               const c = contractRows.find((cr) => cr.id === p.contractId);
+              const isOpen = expandedPaymentId === p.id;
               return (
-                <tr key={p.id}>
+                <React.Fragment key={p.id}>
+                <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEditPayment() : startEditPayment(p))}>
                   {isAllSites && <td className="muted">{siteById[p.siteId]?.name || "—"}</td>}
                   <td className="mono">{p.date}</td>
-                  <td>{c?.name || "已刪除項目"}</td>
+                  <td>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      {c?.name || "已刪除項目"}
+                    </span>
+                  </td>
                   <td className="right mono strong">{fmtMoney(p.amount)}</td>
                   <td className="muted">{p.note || "—"}</td>
-                  <td><button className="wel-icon-btn" onClick={() => deletePayment(p.id)}><Trash2 size={14} /></button></td>
+                  <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deletePayment(p.id); }}><Trash2 size={14} /></button></td>
                 </tr>
+                {isOpen && paymentDraft && (
+                  <tr onClick={(e) => e.stopPropagation()}>
+                    <td colSpan={isAllSites ? 6 : 5} style={{ padding: 0 }}>
+                      <div className="wel-timeline-wrap">
+                        <div className="wel-form-grid">
+                          <Field label="發包項目">
+                            <select value={paymentDraft.contractId} onChange={(e) => setPaymentDraft({ ...paymentDraft, contractId: e.target.value })}>
+                              {contractRows.map((cr) => <option key={cr.id} value={cr.id}>{cr.name}</option>)}
+                            </select>
+                          </Field>
+                          <Field label="領款日期">
+                            <input type="date" value={paymentDraft.date} onChange={(e) => setPaymentDraft({ ...paymentDraft, date: e.target.value })} />
+                          </Field>
+                          <Field label="金額">
+                            <input type="number" min="0" step="any" value={paymentDraft.amount} onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })} />
+                          </Field>
+                          <Field label="備註" wide>
+                            <input value={paymentDraft.note} onChange={(e) => setPaymentDraft({ ...paymentDraft, note: e.target.value })} />
+                          </Field>
+                        </div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button type="button" className="wel-btn-primary" onClick={() => saveEditPayment(p.id)}>儲存修改</button>
+                          <button type="button" className="wel-btn-ghost" onClick={cancelEditPayment}>取消</button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -2995,13 +3189,18 @@ function FloorItemsPanel({
   contract, floorItems, isAllSites,
   addTemplateRow, updateTemplateRow, removeTemplateRow, applyTemplateToFloors,
   addFloorItem, updateFloorItem, deleteFloorItem, deleteFloorGroup,
-  addAttendance, deleteAttendance, contractWorkLogs, sites, setCurrentSiteId, showToast,
+  addAttendance, deleteAttendance, updateAttendance, contractWorkLogs, sites, setCurrentSiteId, showToast,
   contractItems, addContractItem, addContractItemsBatch, addPaymentFromItem, updateContractItem, deleteContractItem, deleteContractItemsByFloor, deleteContractItemsByName,
 }) {
   const [range, setRange] = useState({ fromN: "", toN: "", format: "{n}F", extra: "", overwrite: false });
   const [quickAdd, setQuickAdd] = useState({ floor: "", itemName: "", amount: "" });
   const [attend, setAttend] = useState({ date: todayStr(), headcount: 1, note: "" });
   const [openAttendMonths, setOpenAttendMonths] = useState({});
+  const [editingAttendId, setEditingAttendId] = useState(null);
+  const [attendDraft, setAttendDraft] = useState(null);
+  const startEditAttend = (l) => { setEditingAttendId(l.id); setAttendDraft({ date: l.date, headcount: l.headcount, note: l.note || "" }); };
+  const cancelEditAttend = () => { setEditingAttendId(null); setAttendDraft(null); };
+  const saveEditAttend = (id) => { updateAttendance(id, { ...attendDraft, headcount: Number(attendDraft.headcount) || 1 }); setEditingAttendId(null); setAttendDraft(null); };
   const [newItem, setNewItem] = useState({ name: "", amount: "", percent: "", date: todayStr(), note: "", floor: "" });
   const [itemFloorRange, setItemFloorRange] = useState({ fromN: "", toN: "", format: "{n}F", extra: "" });
   const [newTemplateRow, setNewTemplateRow] = useState({ name: "", amount: "" });
@@ -3316,12 +3515,22 @@ function FloorItemsPanel({
                 {mOpen && (
                   <div className="wel-attendance-list">
                     {mg.items.map((l) => (
-                      <div key={l.id} className="wel-attendance-item">
-                        <span className="mono">{l.date}</span>
-                        <span className="mono muted">{l.headcount} 人</span>
-                        <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
-                        <button className="wel-icon-btn" onClick={() => deleteAttendance(l.id)}><X size={13} /></button>
-                      </div>
+                      editingAttendId === l.id ? (
+                        <div key={l.id} className="wel-attendance-item">
+                          <input type="date" value={attendDraft.date} onChange={(e) => setAttendDraft({ ...attendDraft, date: e.target.value })} style={{ width: 130 }} />
+                          <input type="number" min="1" step="1" value={attendDraft.headcount} onChange={(e) => setAttendDraft({ ...attendDraft, headcount: e.target.value })} style={{ width: 60 }} />
+                          <input placeholder="備註" value={attendDraft.note} onChange={(e) => setAttendDraft({ ...attendDraft, note: e.target.value })} style={{ flex: 1 }} />
+                          <button className="wel-icon-btn" onClick={() => saveEditAttend(l.id)}><CheckCircle2 size={13} /></button>
+                          <button className="wel-icon-btn" onClick={cancelEditAttend}><X size={13} /></button>
+                        </div>
+                      ) : (
+                        <div key={l.id} className="wel-attendance-item wel-row-clickable" onClick={() => startEditAttend(l)}>
+                          <span className="mono">{l.date}</span>
+                          <span className="mono muted">{l.headcount} 人</span>
+                          <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
+                          <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteAttendance(l.id); }}><X size={13} /></button>
+                        </div>
+                      )
                     ))}
                   </div>
                 )}
@@ -3354,7 +3563,7 @@ function ItemNameHeader({ name, onRename }) {
 }
 
 function ClientPaymentsTab({
-  clientPayments, siteById, currentSite, clientPaymentForm, setClientPaymentForm, submitClientPayment, deleteClientPayment,
+  clientPayments, siteById, currentSite, clientPaymentForm, setClientPaymentForm, submitClientPayment, deleteClientPayment, updateClientPayment,
   clientPaidTotal, projectGrandTotal, profitLoss, isAllSites, currentSiteId,
   templateRows, floorItems, clientFloorTotal,
   addClientTemplateRow, addClientFloorItem, addClientFloorItemsBatch, updateClientFloorItem, deleteClientFloorItem,
@@ -3363,6 +3572,12 @@ function ClientPaymentsTab({
   sites, setCurrentSiteId, showToast,
 }) {
   const pct = projectGrandTotal > 0 ? Math.min(100, (clientPaidTotal / projectGrandTotal) * 100) : 0;
+  const [expandedPaymentId, setExpandedPaymentId] = useState(null);
+  const [paymentDraft, setPaymentDraft] = useState(null);
+  const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, item: p.item || "", amount: p.amount, note: p.note || "" }); };
+  const cancelEditPayment = () => { setExpandedPaymentId(null); setPaymentDraft(null); };
+  const saveEditPayment = (id) => { updateClientPayment(id, { ...paymentDraft, amount: Number(paymentDraft.amount) || 0 }); setExpandedPaymentId(null); setPaymentDraft(null); };
+  const sortedClientPayments = useMemo(() => clientPayments.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [clientPayments]);
   const handleExportExcel = () => exportExcel("甲方收款", [
     { name: "收款紀錄", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 金額: Number(p.amount) || 0, 備註: p.note || "" })) },
     { name: "樓層請款項目", rows: floorItems.map((f) => ({ 日期: f.date, 項目: f.itemName, 樓層: f.floor || "", 百分比: f.percent === undefined ? "" : f.percent, 金額: Number(f.amount) || 0 })) },
@@ -3442,17 +3657,53 @@ function ClientPaymentsTab({
             <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>請款項目</th><th className="right">金額</th><th>備註</th><th></th></tr>
           </thead>
           <tbody>
-            {clientPayments.length === 0 && (<tr><td colSpan={isAllSites ? 6 : 5}><Empty text="尚無甲方收款紀錄" /></td></tr>)}
-            {clientPayments.map((p) => (
-              <tr key={p.id}>
+            {sortedClientPayments.length === 0 && (<tr><td colSpan={isAllSites ? 6 : 5}><Empty text="尚無甲方收款紀錄" /></td></tr>)}
+            {sortedClientPayments.map((p) => {
+              const isOpen = expandedPaymentId === p.id;
+              return (
+              <React.Fragment key={p.id}>
+              <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEditPayment() : startEditPayment(p))}>
                 {isAllSites && <td className="muted">{siteById[p.siteId]?.name || "—"}</td>}
                 <td className="mono">{p.date}</td>
-                <td>{p.item || "—"}</td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    {p.item || "—"}
+                  </span>
+                </td>
                 <td className="right mono strong" style={{ color: "var(--teal)" }}>{fmtMoney(p.amount)}</td>
                 <td className="muted">{p.note || "—"}</td>
-                <td><button className="wel-icon-btn" onClick={() => deleteClientPayment(p.id)}><Trash2 size={14} /></button></td>
+                <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteClientPayment(p.id); }}><Trash2 size={14} /></button></td>
               </tr>
-            ))}
+              {isOpen && paymentDraft && (
+                <tr onClick={(e) => e.stopPropagation()}>
+                  <td colSpan={isAllSites ? 6 : 5} style={{ padding: 0 }}>
+                    <div className="wel-timeline-wrap">
+                      <div className="wel-form-grid">
+                        <Field label="收款日期">
+                          <input type="date" value={paymentDraft.date} onChange={(e) => setPaymentDraft({ ...paymentDraft, date: e.target.value })} />
+                        </Field>
+                        <Field label="請款項目 / 期別" wide>
+                          <input value={paymentDraft.item} onChange={(e) => setPaymentDraft({ ...paymentDraft, item: e.target.value })} />
+                        </Field>
+                        <Field label="金額">
+                          <input type="number" min="0" step="any" value={paymentDraft.amount} onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })} />
+                        </Field>
+                        <Field label="備註" wide>
+                          <input value={paymentDraft.note} onChange={(e) => setPaymentDraft({ ...paymentDraft, note: e.target.value })} />
+                        </Field>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className="wel-btn-primary" onClick={() => saveEditPayment(p.id)}>儲存修改</button>
+                        <button type="button" className="wel-btn-ghost" onClick={cancelEditPayment}>取消</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -4133,7 +4384,7 @@ function OrderTimeline({ items }) {
 
 function DiscussionTab({
   discussionItems, siteById, discussionForm, setDiscussionForm, submitDiscussion,
-  toggleDiscussionResolved, updateDiscussionResult, deleteDiscussion, isAllSites, sites, setCurrentSiteId,
+  toggleDiscussionResolved, updateDiscussionResult, updateDiscussion, deleteDiscussion, isAllSites, sites, setCurrentSiteId,
   currentSiteId, showToast,
 }) {
   const copyShareLink = async () => {
@@ -4146,11 +4397,24 @@ function DiscussionTab({
     }
   };
   const [filter, setFilter] = useState("all"); // all | open | resolved
-  const filtered = discussionItems.filter((d) => {
-    if (filter === "open") return !d.resolved;
-    if (filter === "resolved") return !!d.resolved;
-    return true;
-  });
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const startEdit = (d) => { setEditingId(d.id); setEditDraft({ date: d.date, topic: d.topic, note: d.note || "" }); };
+  const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
+  const saveEdit = (id) => {
+    if (!editDraft.topic.trim()) { showToast("請填寫「討論項目」後再儲存"); return; }
+    updateDiscussion(id, editDraft);
+    setEditingId(null);
+    setEditDraft(null);
+  };
+  const filtered = discussionItems
+    .filter((d) => {
+      if (filter === "open") return !d.resolved;
+      if (filter === "resolved") return !!d.resolved;
+      return true;
+    })
+    .slice()
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
   const openCount = discussionItems.filter((d) => !d.resolved).length;
 
   const handleExportExcel = () => exportExcel("備註討論項目", [{
@@ -4218,25 +4482,48 @@ function DiscussionTab({
         {filtered.length === 0 && <div className="wel-card"><Empty text="尚無討論項目" /></div>}
         {filtered.map((d) => (
           <div key={d.id} className={"wel-discussion-card" + (d.resolved ? " resolved" : "")}>
-            <div className="wel-discussion-head">
-              <button type="button" className="wel-status-btn" onClick={() => toggleDiscussionResolved(d.id)} title="點擊切換是否有結果">
-                {d.resolved ? <CheckCircle2 size={17} color="var(--green)" /> : <Circle size={17} color="var(--text-muted)" />}
-              </button>
-              <span className="wel-discussion-topic">{d.topic}</span>
-              {isAllSites && <span className="wel-tag">{siteById[d.siteId]?.name || "—"}</span>}
-              <span className="mono muted" style={{ fontSize: 11.5 }}>{d.date}</span>
-              <button className="wel-icon-btn" onClick={() => deleteDiscussion(d.id)}><Trash2 size={14} /></button>
-            </div>
-            {d.note && <div className="wel-discussion-note muted">{d.note}</div>}
-            <div className="wel-discussion-result">
-              <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)" }}>結果：</span>
-              <input
-                placeholder={d.resolved ? "輸入結果說明…" : "尚無結果（點左側圓圈標記為已有結果）"}
-                value={d.result || ""}
-                disabled={!d.resolved}
-                onChange={(e) => updateDiscussionResult(d.id, e.target.value)}
-              />
-            </div>
+            {editingId === d.id ? (
+              <div className="wel-timeline-wrap" style={{ padding: 0 }}>
+                <div className="wel-form-grid">
+                  <Field label="日期">
+                    <input type="date" value={editDraft.date} onChange={(e) => setEditDraft({ ...editDraft, date: e.target.value })} />
+                  </Field>
+                  <Field label="討論項目" wide>
+                    <input value={editDraft.topic} onChange={(e) => setEditDraft({ ...editDraft, topic: e.target.value })} />
+                  </Field>
+                  <Field label="備註 / 細節" wide>
+                    <input value={editDraft.note} onChange={(e) => setEditDraft({ ...editDraft, note: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" className="wel-btn-primary" onClick={() => saveEdit(d.id)}>儲存修改</button>
+                  <button type="button" className="wel-btn-ghost" onClick={cancelEdit}>取消</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="wel-discussion-head">
+                  <button type="button" className="wel-status-btn" onClick={() => toggleDiscussionResolved(d.id)} title="點擊切換是否有結果">
+                    {d.resolved ? <CheckCircle2 size={17} color="var(--green)" /> : <Circle size={17} color="var(--text-muted)" />}
+                  </button>
+                  <span className="wel-discussion-topic">{d.topic}</span>
+                  {isAllSites && <span className="wel-tag">{siteById[d.siteId]?.name || "—"}</span>}
+                  <span className="mono muted" style={{ fontSize: 11.5 }}>{d.date}</span>
+                  <button className="wel-icon-btn" onClick={() => startEdit(d)}><Pencil size={14} /></button>
+                  <button className="wel-icon-btn" onClick={() => deleteDiscussion(d.id)}><Trash2 size={14} /></button>
+                </div>
+                {d.note && <div className="wel-discussion-note muted">{d.note}</div>}
+                <div className="wel-discussion-result">
+                  <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)" }}>結果：</span>
+                  <input
+                    placeholder={d.resolved ? "輸入結果說明…" : "尚無結果（點左側圓圈標記為已有結果）"}
+                    value={d.result || ""}
+                    disabled={!d.resolved}
+                    onChange={(e) => updateDiscussionResult(d.id, e.target.value)}
+                  />
+                </div>
+              </>
+            )}
           </div>
         ))}
       </div>
@@ -4245,14 +4532,20 @@ function DiscussionTab({
 }
 
 function CapitalTab({
-  capitalContributions, siteById, capitalForm, setCapitalForm, submitCapitalContribution, deleteCapitalContribution,
+  capitalContributions, siteById, capitalForm, setCapitalForm, submitCapitalContribution, deleteCapitalContribution, updateCapitalContribution,
   capitalTotal, isAllSites, sites, setCurrentSiteId,
 }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const startEdit = (c) => { setExpandedId(c.id); setDraft({ date: c.date, amount: c.amount, note: c.note || "" }); };
+  const cancelEdit = () => { setExpandedId(null); setDraft(null); };
+  const saveEdit = (id) => { updateCapitalContribution(id, { ...draft, amount: Number(draft.amount) || 0 }); setExpandedId(null); setDraft(null); };
+  const sortedContributions = useMemo(() => capitalContributions.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [capitalContributions]);
   const handleExportExcel = () => exportExcel("投入成本", [
-    { name: "投入成本", rows: capitalContributions.map((c) => ({ 日期: c.date, 金額: Number(c.amount) || 0, 備註: c.note || "" })) },
+    { name: "投入成本", rows: sortedContributions.map((c) => ({ 日期: c.date, 金額: Number(c.amount) || 0, 備註: c.note || "" })) },
   ]);
   const handleExportWord = () => exportWord("投入成本", "投入成本紀錄", [
-    { title: "投入成本紀錄", headers: ["日期", "金額", "備註"], rows: capitalContributions.map((c) => [c.date, fmtMoney(c.amount), c.note || ""]) },
+    { title: "投入成本紀錄", headers: ["日期", "金額", "備註"], rows: sortedContributions.map((c) => [c.date, fmtMoney(c.amount), c.note || ""]) },
   ]);
   return (
     <div className="wel-page">
@@ -4296,16 +4589,49 @@ function CapitalTab({
             <tr>{isAllSites && <th>案場</th>}<th>日期</th><th className="right">金額</th><th>備註</th><th></th></tr>
           </thead>
           <tbody>
-            {capitalContributions.length === 0 && (<tr><td colSpan={isAllSites ? 4 : 3}><Empty text="尚無投入成本紀錄" /></td></tr>)}
-            {capitalContributions.map((c) => (
-              <tr key={c.id}>
+            {sortedContributions.length === 0 && (<tr><td colSpan={isAllSites ? 4 : 3}><Empty text="尚無投入成本紀錄" /></td></tr>)}
+            {sortedContributions.map((c) => {
+              const isOpen = expandedId === c.id;
+              return (
+              <React.Fragment key={c.id}>
+              <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEdit() : startEdit(c))}>
                 {isAllSites && <td className="muted">{siteById[c.siteId]?.name || "—"}</td>}
-                <td className="mono">{c.date}</td>
+                <td className="mono">
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    {c.date}
+                  </span>
+                </td>
                 <td className="right mono strong" style={{ color: "var(--teal)" }}>{fmtMoney(c.amount)}</td>
                 <td className="muted">{c.note || "—"}</td>
-                <td><button className="wel-icon-btn" onClick={() => deleteCapitalContribution(c.id)}><Trash2 size={14} /></button></td>
+                <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteCapitalContribution(c.id); }}><Trash2 size={14} /></button></td>
               </tr>
-            ))}
+              {isOpen && draft && (
+                <tr onClick={(e) => e.stopPropagation()}>
+                  <td colSpan={isAllSites ? 4 : 3} style={{ padding: 0 }}>
+                    <div className="wel-timeline-wrap">
+                      <div className="wel-form-grid">
+                        <Field label="日期">
+                          <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} />
+                        </Field>
+                        <Field label="金額">
+                          <input type="number" min="0" step="any" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} />
+                        </Field>
+                        <Field label="備註" wide>
+                          <input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
+                        </Field>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className="wel-btn-primary" onClick={() => saveEdit(c.id)}>儲存修改</button>
+                        <button type="button" className="wel-btn-ghost" onClick={cancelEdit}>取消</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -4314,14 +4640,20 @@ function CapitalTab({
 }
 
 function FixedAssetsTab({
-  fixedAssets, siteById, fixedAssetForm, setFixedAssetForm, submitFixedAsset, deleteFixedAsset,
+  fixedAssets, siteById, fixedAssetForm, setFixedAssetForm, submitFixedAsset, deleteFixedAsset, updateFixedAsset,
   fixedAssetsTotal, isAllSites, sites, setCurrentSiteId,
 }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const startEdit = (f) => { setExpandedId(f.id); setDraft({ name: f.name, quantity: f.quantity, amount: f.amount, date: f.date }); };
+  const cancelEdit = () => { setExpandedId(null); setDraft(null); };
+  const saveEdit = (id) => { updateFixedAsset(id, { ...draft, quantity: Number(draft.quantity) || 1, amount: Number(draft.amount) || 0 }); setExpandedId(null); setDraft(null); };
+  const sortedAssets = useMemo(() => fixedAssets.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [fixedAssets]);
   const handleExportExcel = () => exportExcel("固定資產", [
-    { name: "固定資產清單", rows: fixedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 購買日期: f.date })) },
+    { name: "固定資產清單", rows: sortedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 購買日期: f.date })) },
   ]);
   const handleExportWord = () => exportWord("固定資產", "固定資產清點清單", [
-    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "購買日期"], rows: fixedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.date]) },
+    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "購買日期"], rows: sortedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.date]) },
   ]);
   return (
     <div className="wel-page">
@@ -4368,18 +4700,54 @@ function FixedAssetsTab({
             <tr>{isAllSites && <th>案場</th>}<th>工具名稱</th><th className="right">數量</th><th className="right">購買金額</th><th className="right">小計</th><th>購買日期</th><th></th></tr>
           </thead>
           <tbody>
-            {fixedAssets.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚無固定資產紀錄" /></td></tr>)}
-            {fixedAssets.map((f) => (
-              <tr key={f.id}>
+            {sortedAssets.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚無固定資產紀錄" /></td></tr>)}
+            {sortedAssets.map((f) => {
+              const isOpen = expandedId === f.id;
+              return (
+              <React.Fragment key={f.id}>
+              <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEdit() : startEdit(f))}>
                 {isAllSites && <td className="muted">{siteById[f.siteId]?.name || "—"}</td>}
-                <td>{f.name}</td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    {f.name}
+                  </span>
+                </td>
                 <td className="right mono">{fmtNum(f.quantity)}</td>
                 <td className="right mono">{fmtMoney(f.amount)}</td>
                 <td className="right mono strong" style={{ color: "var(--amber)" }}>{fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0))}</td>
                 <td className="mono muted">{f.date}</td>
-                <td><button className="wel-icon-btn" onClick={() => deleteFixedAsset(f.id)}><Trash2 size={14} /></button></td>
+                <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteFixedAsset(f.id); }}><Trash2 size={14} /></button></td>
               </tr>
-            ))}
+              {isOpen && draft && (
+                <tr onClick={(e) => e.stopPropagation()}>
+                  <td colSpan={isAllSites ? 7 : 6} style={{ padding: 0 }}>
+                    <div className="wel-timeline-wrap">
+                      <div className="wel-form-grid">
+                        <Field label="工具名稱" wide>
+                          <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+                        </Field>
+                        <Field label="數量">
+                          <input type="number" min="1" step="1" value={draft.quantity} onChange={(e) => setDraft({ ...draft, quantity: e.target.value })} />
+                        </Field>
+                        <Field label="購買金額">
+                          <input type="number" min="0" step="any" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} />
+                        </Field>
+                        <Field label="購買日期">
+                          <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} />
+                        </Field>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className="wel-btn-primary" onClick={() => saveEdit(f.id)}>儲存修改</button>
+                        <button type="button" className="wel-btn-ghost" onClick={cancelEdit}>取消</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -4388,15 +4756,54 @@ function FixedAssetsTab({
 }
 
 function OtherExpensesTab({
-  otherExpenses, siteById, otherExpenseForm, setOtherExpenseForm, submitOtherExpense, deleteOtherExpense,
-  otherExpensesTotal, materialItems, isAllSites, sites, setCurrentSiteId,
+  otherExpenses, siteById, otherExpenseForm, setOtherExpenseForm, submitOtherExpense, deleteOtherExpense, updateOtherExpense,
+  otherExpensesTotal, materialItems, suppliers, addSupplier, updateSupplier, removeSupplier, isAllSites, sites, setCurrentSiteId, showToast,
 }) {
+  const [expandedExpenseId, setExpandedExpenseId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const [openExpenseMonths, setOpenExpenseMonths] = useState({});
+  const [invoiceFilter, setInvoiceFilter] = useState("all"); // all | yes | no
+  const [supplierManageOpen, setSupplierManageOpen] = useState(false);
+  const [newSupplier, setNewSupplier] = useState("");
+
+  const startEditExpense = (e) => {
+    setExpandedExpenseId(e.id);
+    setEditDraft({
+      date: e.date, itemName: e.itemName, supplier: e.supplier || "", amount: e.amount, note: e.note || "",
+      hasInvoice: !!e.hasInvoice, applyTax: !!e.applyTax, taxRate: e.taxRate ?? 5,
+    });
+  };
+  const cancelEditExpense = () => { setExpandedExpenseId(null); setEditDraft(null); };
+  const saveEditExpense = (id) => {
+    if (!editDraft.itemName.trim() || !editDraft.amount) {
+      showToast("請填寫「項目名稱」與「金額」後再儲存");
+      return;
+    }
+    updateOtherExpense(id, { ...editDraft, amount: Number(editDraft.amount) });
+    setExpandedExpenseId(null);
+    setEditDraft(null);
+  };
+
+  const sortedSuppliers = useMemo(() => suppliers.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [suppliers]);
+  const handlePickSupplier = (e) => {
+    const val = e.target.value;
+    if (val === "__manage__") { setSupplierManageOpen(true); return; }
+    setOtherExpenseForm({ ...otherExpenseForm, supplier: val });
+  };
+
+  const filteredExpenses = useMemo(
+    () => otherExpenses.filter((e) => (invoiceFilter === "all" ? true : invoiceFilter === "yes" ? !!e.hasInvoice : !e.hasInvoice)),
+    [otherExpenses, invoiceFilter]
+  );
+  const taxOf = (e) => (e.hasInvoice && e.applyTax ? (Number(e.amount) || 0) * (Number(e.taxRate) || 0) / 100 : 0);
+
   const handleExportExcel = () => exportExcel("其他支出", [
-    { name: "其他支出", rows: otherExpenses.map((e) => ({ 日期: e.date, 項目: e.itemName, 金額: Number(e.amount) || 0, 備註: e.note || "" })) },
+    { name: "其他支出", rows: filteredExpenses.map((e) => ({ 日期: e.date, 項目: e.itemName, 廠商: e.supplier || "", 金額: Number(e.amount) || 0, 發票: e.hasInvoice ? "有發票" : "無發票", 稅額: taxOf(e), 備註: e.note || "" })) },
   ]);
   const handleExportWord = () => exportWord("其他支出", "其他支出紀錄", [
-    { title: "其他支出紀錄", headers: ["日期", "項目", "金額", "備註"], rows: otherExpenses.map((e) => [e.date, e.itemName, fmtMoney(e.amount), e.note || ""]) },
+    { title: "其他支出紀錄", headers: ["日期", "項目", "廠商", "金額", "發票", "稅額", "備註"], rows: filteredExpenses.map((e) => [e.date, e.itemName, e.supplier || "", fmtMoney(e.amount), e.hasInvoice ? "有發票" : "無發票", taxOf(e) ? fmtMoney(taxOf(e)) : "—", e.note || ""]) },
   ]);
+
   return (
     <div className="wel-page">
       <div className="wel-page-head">
@@ -4434,9 +4841,69 @@ function OtherExpensesTab({
               {materialItems.map((m) => <option key={m.id} value={m.name} />)}
             </datalist>
           </Field>
+          <Field label="廠商 / 供應商" wide>
+            <select value={sortedSuppliers.some((s) => s.name === otherExpenseForm.supplier) ? otherExpenseForm.supplier : ""} onChange={handlePickSupplier}>
+              <option value="">（未指定）</option>
+              {sortedSuppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+              <option value="__manage__">＋ 管理廠商清單…</option>
+            </select>
+            {supplierManageOpen && (
+              <div className="wel-material-manager">
+                <div className="wel-material-add-row">
+                  <input placeholder="新廠商名稱" value={newSupplier} onChange={(e) => setNewSupplier(e.target.value)} />
+                  <button type="button" className="wel-btn-ghost" onClick={() => { addSupplier(newSupplier); setNewSupplier(""); }}>
+                    <Plus size={13} /> 新增
+                  </button>
+                </div>
+                <div className="wel-manager-list">
+                  {sortedSuppliers.length === 0 && <span className="muted" style={{ fontSize: 12 }}>尚未建立任何廠商</span>}
+                  {sortedSuppliers.map((s) => (
+                    <div key={s.id} className="wel-manager-row">
+                      <input className="wel-manager-name" value={s.name} onChange={(e) => updateSupplier(s.id, { name: e.target.value })} />
+                      <button type="button" className="wel-icon-btn" onClick={() => removeSupplier(s.id)}><Trash2 size={13} /></button>
+                    </div>
+                  ))}
+                </div>
+                <div className="muted" style={{ fontSize: 11 }}>提示：改名稱會自動同步更新過去的叫貨／其他支出紀錄。</div>
+                <button type="button" className="wel-btn-ghost" onClick={() => setSupplierManageOpen(false)}>收合廠商管理</button>
+              </div>
+            )}
+          </Field>
           <Field label="金額">
             <input type="number" min="0" step="any" value={otherExpenseForm.amount} onChange={(e) => setOtherExpenseForm({ ...otherExpenseForm, amount: e.target.value })} />
           </Field>
+          <Field label="有無發票">
+            <select value={otherExpenseForm.hasInvoice ? "yes" : "no"} onChange={(e) => setOtherExpenseForm({ ...otherExpenseForm, hasInvoice: e.target.value === "yes" })}>
+              <option value="yes">有發票</option>
+              <option value="no">無發票</option>
+            </select>
+          </Field>
+          {otherExpenseForm.hasInvoice && (
+            <Field label="營業稅" wide>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={otherExpenseForm.applyTax}
+                    onChange={(e) => setOtherExpenseForm({ ...otherExpenseForm, applyTax: e.target.checked })}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  計算稅額
+                </label>
+                {otherExpenseForm.applyTax && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                    稅率
+                    <input
+                      type="number" min="0" step="0.1" value={otherExpenseForm.taxRate}
+                      onChange={(e) => setOtherExpenseForm({ ...otherExpenseForm, taxRate: e.target.value })}
+                      style={{ width: 60, height: 32 }}
+                    />
+                    %
+                  </span>
+                )}
+              </div>
+            </Field>
+          )}
           <Field label="備註" wide>
             <input placeholder="選填" value={otherExpenseForm.note} onChange={(e) => setOtherExpenseForm({ ...otherExpenseForm, note: e.target.value })} />
           </Field>
@@ -4444,25 +4911,139 @@ function OtherExpensesTab({
         <button type="button" className="wel-btn-primary" onClick={submitOtherExpense}><Plus size={15} /> 新增其他支出</button>
       </div>
 
-      <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
-        <table className="wel-table">
-          <thead>
-            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>項目</th><th className="right">金額</th><th>備註</th><th></th></tr>
-          </thead>
-          <tbody>
-            {otherExpenses.length === 0 && (<tr><td colSpan={isAllSites ? 5 : 4}><Empty text="尚無其他支出紀錄" /></td></tr>)}
-            {otherExpenses.map((e) => (
-              <tr key={e.id}>
-                {isAllSites && <td className="muted">{siteById[e.siteId]?.name || "—"}</td>}
-                <td className="mono">{e.date}</td>
-                <td>{e.itemName}</td>
-                <td className="right mono strong">{fmtMoney(e.amount)}</td>
-                <td className="muted">{e.note || "—"}</td>
-                <td><button className="wel-icon-btn" onClick={() => deleteOtherExpense(e.id)}><Trash2 size={14} /></button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="wel-card">
+        <div className="wel-card-title-row">
+          <div className="wel-card-title"><CalendarRange size={14} /> 其他支出紀錄（依年月點開查詢）</div>
+          <div className="wel-filter">
+            <select value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value)}>
+              <option value="all">全部（{otherExpenses.length}）</option>
+              <option value="yes">有發票（{otherExpenses.filter((e) => e.hasInvoice).length}）</option>
+              <option value="no">無發票（{otherExpenses.filter((e) => !e.hasInvoice).length}）</option>
+            </select>
+          </div>
+        </div>
+        {filteredExpenses.length === 0 && <Empty text="尚無其他支出紀錄" />}
+        {attendanceByMonth(filteredExpenses).map((mg) => {
+          const subtotal = mg.items.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+          const mOpen = !!openExpenseMonths[mg.month];
+          return (
+            <div key={mg.month} className="wel-item-floor-group">
+              <button type="button" className="wel-item-group-label wel-item-group-toggle" onClick={() => setOpenExpenseMonths((prev) => ({ ...prev, [mg.month]: !prev[mg.month] }))}>
+                {mOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                {mg.month} · {mg.items.length} 筆 · {fmtMoney(subtotal)}
+              </button>
+              {mOpen && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="wel-table">
+                    <thead>
+                      <tr>
+                        {isAllSites && <th>案場</th>}
+                        <th>日期</th><th>項目</th><th>廠商</th><th className="right">金額</th><th>發票</th><th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mg.items.map((e) => {
+                        const isOpen = expandedExpenseId === e.id;
+                        return (
+                        <React.Fragment key={e.id}>
+                        <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEditExpense() : startEditExpense(e))}>
+                          {isAllSites && <td className="muted">{siteById[e.siteId]?.name || "—"}</td>}
+                          <td className="mono">{e.date}</td>
+                          <td>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                              {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                              {e.itemName}
+                            </span>
+                            {e.note && <div className="muted" style={{ fontSize: 11.5, marginTop: 2, marginLeft: 18 }}>{e.note}</div>}
+                          </td>
+                          <td className="muted">{e.supplier || "—"}</td>
+                          <td className="right mono strong">{fmtMoney(e.amount)}</td>
+                          <td>
+                            {e.hasInvoice
+                              ? <span className="wel-chip-info">有發票</span>
+                              : <span className="wel-chip">無發票</span>}
+                            {e.hasInvoice && e.applyTax && (
+                              <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>
+                                稅額 {fmtMoney((Number(e.amount) || 0) * (Number(e.taxRate) || 0) / 100)}（{fmtNum(e.taxRate)}%）
+                              </div>
+                            )}
+                          </td>
+                          <td><button className="wel-icon-btn" onClick={(ev) => { ev.stopPropagation(); deleteOtherExpense(e.id); }}><Trash2 size={14} /></button></td>
+                        </tr>
+                        {isOpen && editDraft && (
+                          <tr onClick={(ev) => ev.stopPropagation()}>
+                            <td colSpan={isAllSites ? 7 : 6} style={{ padding: 0 }}>
+                              <div className="wel-timeline-wrap">
+                                <div className="wel-form-grid">
+                                  <Field label="日期">
+                                    <input type="date" value={editDraft.date} onChange={(ev) => setEditDraft({ ...editDraft, date: ev.target.value })} />
+                                  </Field>
+                                  <Field label="項目名稱" wide>
+                                    <input
+                                      list="wel-other-expense-items"
+                                      value={editDraft.itemName}
+                                      onChange={(ev) => setEditDraft({ ...editDraft, itemName: ev.target.value })}
+                                    />
+                                  </Field>
+                                  <Field label="廠商 / 供應商">
+                                    <input value={editDraft.supplier} onChange={(ev) => setEditDraft({ ...editDraft, supplier: ev.target.value })} />
+                                  </Field>
+                                  <Field label="金額">
+                                    <input type="number" step="any" min="0" value={editDraft.amount} onChange={(ev) => setEditDraft({ ...editDraft, amount: ev.target.value })} />
+                                  </Field>
+                                  <Field label="有無發票">
+                                    <select value={editDraft.hasInvoice ? "yes" : "no"} onChange={(ev) => setEditDraft({ ...editDraft, hasInvoice: ev.target.value === "yes" })}>
+                                      <option value="yes">有發票</option>
+                                      <option value="no">無發票</option>
+                                    </select>
+                                  </Field>
+                                  {editDraft.hasInvoice && (
+                                    <Field label="營業稅" wide>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+                                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                                          <input
+                                            type="checkbox" checked={editDraft.applyTax}
+                                            onChange={(ev) => setEditDraft({ ...editDraft, applyTax: ev.target.checked })}
+                                            style={{ width: 16, height: 16 }}
+                                          />
+                                          計算稅額
+                                        </label>
+                                        {editDraft.applyTax && (
+                                          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                                            稅率
+                                            <input
+                                              type="number" min="0" step="0.1" value={editDraft.taxRate}
+                                              onChange={(ev) => setEditDraft({ ...editDraft, taxRate: ev.target.value })}
+                                              style={{ width: 60, height: 32 }}
+                                            />
+                                            %
+                                          </span>
+                                        )}
+                                      </div>
+                                    </Field>
+                                  )}
+                                  <Field label="備註" wide>
+                                    <input value={editDraft.note} onChange={(ev) => setEditDraft({ ...editDraft, note: ev.target.value })} />
+                                  </Field>
+                                </div>
+                                <div style={{ display: "flex", gap: 8 }}>
+                                  <button type="button" className="wel-btn-primary" onClick={() => saveEditExpense(e.id)}>儲存修改</button>
+                                  <button type="button" className="wel-btn-ghost" onClick={cancelEditExpense}>取消</button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
