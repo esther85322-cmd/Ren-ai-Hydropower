@@ -652,7 +652,7 @@ export default function WaterElectricLedger() {
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
   const emptyCapitalContribution = { date: todayStr(), amount: "", note: "" };
   const [capitalForm, setCapitalForm] = useState(emptyCapitalContribution);
-  const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr() };
+  const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr(), hasInvoice: true };
   const [fixedAssetForm, setFixedAssetForm] = useState(emptyFixedAsset);
   const emptyOtherExpense = { date: todayStr(), itemName: "", supplier: "", amount: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
   const [otherExpenseForm, setOtherExpenseForm] = useState(emptyOtherExpense);
@@ -4645,15 +4645,15 @@ function FixedAssetsTab({
 }) {
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState(null);
-  const startEdit = (f) => { setExpandedId(f.id); setDraft({ name: f.name, quantity: f.quantity, amount: f.amount, date: f.date }); };
+  const startEdit = (f) => { setExpandedId(f.id); setDraft({ name: f.name, quantity: f.quantity, amount: f.amount, date: f.date, hasInvoice: !!f.hasInvoice }); };
   const cancelEdit = () => { setExpandedId(null); setDraft(null); };
   const saveEdit = (id) => { updateFixedAsset(id, { ...draft, quantity: Number(draft.quantity) || 1, amount: Number(draft.amount) || 0 }); setExpandedId(null); setDraft(null); };
   const sortedAssets = useMemo(() => fixedAssets.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [fixedAssets]);
   const handleExportExcel = () => exportExcel("固定資產", [
-    { name: "固定資產清單", rows: sortedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 購買日期: f.date })) },
+    { name: "固定資產清單", rows: sortedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 發票: f.hasInvoice ? "有發票" : "無發票", 購買日期: f.date })) },
   ]);
   const handleExportWord = () => exportWord("固定資產", "固定資產清點清單", [
-    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "購買日期"], rows: sortedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.date]) },
+    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "發票", "購買日期"], rows: sortedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.hasInvoice ? "有發票" : "無發票", f.date]) },
   ]);
   return (
     <div className="wel-page">
@@ -4690,6 +4690,12 @@ function FixedAssetsTab({
           <Field label="購買日期">
             <input type="date" value={fixedAssetForm.date} onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, date: e.target.value })} />
           </Field>
+          <Field label="有無發票">
+            <select value={fixedAssetForm.hasInvoice ? "yes" : "no"} onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, hasInvoice: e.target.value === "yes" })}>
+              <option value="yes">有發票</option>
+              <option value="no">無發票</option>
+            </select>
+          </Field>
         </div>
         <button type="button" className="wel-btn-primary" onClick={submitFixedAsset}><Plus size={15} /> 新增固定資產</button>
       </div>
@@ -4697,10 +4703,10 @@ function FixedAssetsTab({
       <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
         <table className="wel-table">
           <thead>
-            <tr>{isAllSites && <th>案場</th>}<th>工具名稱</th><th className="right">數量</th><th className="right">購買金額</th><th className="right">小計</th><th>購買日期</th><th></th></tr>
+            <tr>{isAllSites && <th>案場</th>}<th>工具名稱</th><th className="right">數量</th><th className="right">購買金額</th><th className="right">小計</th><th>購買日期</th><th>發票</th><th></th></tr>
           </thead>
           <tbody>
-            {sortedAssets.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚無固定資產紀錄" /></td></tr>)}
+            {sortedAssets.length === 0 && (<tr><td colSpan={isAllSites ? 8 : 7}><Empty text="尚無固定資產紀錄" /></td></tr>)}
             {sortedAssets.map((f) => {
               const isOpen = expandedId === f.id;
               return (
@@ -4717,11 +4723,12 @@ function FixedAssetsTab({
                 <td className="right mono">{fmtMoney(f.amount)}</td>
                 <td className="right mono strong" style={{ color: "var(--amber)" }}>{fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0))}</td>
                 <td className="mono muted">{f.date}</td>
+                <td>{f.hasInvoice ? <span className="wel-chip-info">有發票</span> : <span className="wel-chip">無發票</span>}</td>
                 <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteFixedAsset(f.id); }}><Trash2 size={14} /></button></td>
               </tr>
               {isOpen && draft && (
                 <tr onClick={(e) => e.stopPropagation()}>
-                  <td colSpan={isAllSites ? 7 : 6} style={{ padding: 0 }}>
+                  <td colSpan={isAllSites ? 8 : 7} style={{ padding: 0 }}>
                     <div className="wel-timeline-wrap">
                       <div className="wel-form-grid">
                         <Field label="工具名稱" wide>
@@ -4735,6 +4742,12 @@ function FixedAssetsTab({
                         </Field>
                         <Field label="購買日期">
                           <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} />
+                        </Field>
+                        <Field label="有無發票">
+                          <select value={draft.hasInvoice ? "yes" : "no"} onChange={(e) => setDraft({ ...draft, hasInvoice: e.target.value === "yes" })}>
+                            <option value="yes">有發票</option>
+                            <option value="no">無發票</option>
+                          </select>
                         </Field>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
