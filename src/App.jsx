@@ -183,7 +183,14 @@ export default function WaterElectricLedger() {
       // migrate legacy records created before 案場 (site) existed
       const migOrd = ord.map((o) => (o.siteId ? o : { ...o, siteId: fallbackSiteId }));
       const migUse = use.map((u) => (u.siteId ? u : { ...u, siteId: fallbackSiteId }));
-      const migWl = wl.map((l) => (l.siteId ? l : { ...l, siteId: fallbackSiteId }));
+      // migrate legacy work logs created before each day had its own 日薪 snapshot:
+      // freeze in the worker's rate *as it is right now*, so this backfill doesn't
+      // change anyone's already-recorded wage, but future rate edits no longer
+      // reach back and alter it either.
+      const workerRateById = {};
+      wk.forEach((w) => (workerRateById[w.id] = Number(w.dailyRate) || 0));
+      const migWl0 = wl.map((l) => (l.siteId ? l : { ...l, siteId: fallbackSiteId }));
+      const migWl = migWl0.map((l) => (l.dailyRate != null ? l : { ...l, dailyRate: workerRateById[l.workerId] ?? 0 }));
       setProjectName(meta.projectName || "水電工程記帳");
       setCategories(meta.categories && meta.categories.length ? meta.categories : DEFAULT_CATEGORIES);
       setSites(siteList);
@@ -527,9 +534,14 @@ export default function WaterElectricLedger() {
     return m;
   }, [workers]);
 
+  const workLogRate = useCallback(
+    (l) => Number(l.dailyRate ?? workerById[l.workerId]?.dailyRate) || 0,
+    [workerById]
+  );
+
   const laborTotalAllTime = useMemo(
-    () => siteWorkLogsAll.reduce((s, l) => s + (Number(l.days) || 0) * (Number(workerById[l.workerId]?.dailyRate) || 0), 0),
-    [siteWorkLogsAll, workerById]
+    () => siteWorkLogsAll.reduce((s, l) => s + (Number(l.days) || 0) * workLogRate(l), 0),
+    [siteWorkLogsAll, workLogRate]
   );
 
   const rangeFilteredLogs = useMemo(() => {
@@ -544,14 +556,13 @@ export default function WaterElectricLedger() {
     const map = {};
     rangeFilteredLogs.forEach((l) => {
       if (!map[l.workerId]) map[l.workerId] = { workerId: l.workerId, days: 0, wage: 0 };
-      const rate = Number(workerById[l.workerId]?.dailyRate) || 0;
       map[l.workerId].days += Number(l.days) || 0;
-      map[l.workerId].wage += (Number(l.days) || 0) * rate;
+      map[l.workerId].wage += (Number(l.days) || 0) * workLogRate(l);
     });
     return workers
       .map((w) => map[w.id] || { workerId: w.id, days: 0, wage: 0 })
       .sort((a, b) => b.wage - a.wage);
-  }, [rangeFilteredLogs, workers, workerById]);
+  }, [rangeFilteredLogs, workers, workLogRate]);
 
   const laborRangeTotal = useMemo(
     () => laborSummaryByWorker.reduce((s, r) => s + r.wage, 0),
@@ -622,7 +633,7 @@ export default function WaterElectricLedger() {
     });
     workLogs.forEach((l) => {
       if (!map[l.siteId]) return;
-      map[l.siteId].labor += (Number(l.days) || 0) * (Number(workerById[l.workerId]?.dailyRate) || 0);
+      map[l.siteId].labor += (Number(l.days) || 0) * workLogRate(l);
     });
     payments.forEach((p) => {
       if (!map[p.siteId]) return;
@@ -643,7 +654,7 @@ export default function WaterElectricLedger() {
     return Object.values(map)
       .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other, profit: s.collected - (s.material + s.labor + s.contract + s.other) }))
       .sort((a, b) => b.total - a.total);
-  }, [sites, orders, workLogs, workerById, payments, clientPayments, capitalContributions, otherExpenses]);
+  }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses]);
 
   // ---- forms ----
   const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
@@ -652,7 +663,7 @@ export default function WaterElectricLedger() {
   const [usageForm, setUsageForm] = useState(emptyUsage);
   const [newCatName, setNewCatName] = useState("");
   const [newWorker, setNewWorker] = useState({ name: "", dailyRate: "" });
-  const emptyWorkLog = { workerId: "", date: todayStr(), days: 1, note: "" };
+  const emptyWorkLog = { workerId: "", date: todayStr(), days: 1, note: "", dailyRate: "" };
   const [workLogForm, setWorkLogForm] = useState(emptyWorkLog);
   const emptyContract = { name: "", contractor: "", totalPrice: "", date: todayStr(), note: "" };
   const [contractForm, setContractForm] = useState(emptyContract);
@@ -672,7 +683,12 @@ export default function WaterElectricLedger() {
   const [otherExpenseForm, setOtherExpenseForm] = useState(emptyOtherExpense);
 
   useEffect(() => {
-    setWorkLogForm((f) => ({ ...f, workerId: f.workerId || workers[0]?.id || "" }));
+    setWorkLogForm((f) => {
+      const workerId = f.workerId || workers[0]?.id || "";
+      const worker = workers.find((w) => w.id === workerId);
+      const dailyRate = f.dailyRate === "" || f.dailyRate == null ? (worker?.dailyRate ?? "") : f.dailyRate;
+      return { ...f, workerId, dailyRate };
+    });
   }, [workers]);
 
   useEffect(() => {
@@ -857,11 +873,14 @@ export default function WaterElectricLedger() {
       showToast("請選擇「師傅」並填寫「出工天數」後再新增出工紀錄");
       return;
     }
-    const rec = { id: uid(), ...workLogForm, siteId: currentSiteId, days: Number(workLogForm.days) };
+    const rec = {
+      id: uid(), ...workLogForm, siteId: currentSiteId, days: Number(workLogForm.days),
+      dailyRate: Number(workLogForm.dailyRate) || Number(workers.find((w) => w.id === workLogForm.workerId)?.dailyRate) || 0,
+    };
     const next = [rec, ...workLogs];
     setWorkLogs(next);
     persistWorkLogs(next);
-    setWorkLogForm({ ...emptyWorkLog, workerId: workLogForm.workerId });
+    setWorkLogForm({ ...emptyWorkLog, workerId: workLogForm.workerId, dailyRate: workers.find((w) => w.id === workLogForm.workerId)?.dailyRate ?? "" });
   };
   const deleteWorkLog = (id) => {
     const next = workLogs.filter((l) => l.id !== id);
@@ -2575,11 +2594,12 @@ function LaborTab({
   const [expandedContract, setExpandedContract] = useState(null);
   const [quickAttend, setQuickAttend] = useState({ contractId: "", date: todayStr(), headcount: 1, note: "" });
   const [openMonths, setOpenMonths] = useState({});
+  const rateOf = (l) => Number(l.dailyRate ?? workerById[l.workerId]?.dailyRate) || 0;
   const [editingLogId, setEditingLogId] = useState(null);
   const [logDraft, setLogDraft] = useState(null);
-  const startEditLog = (l) => { setEditingLogId(l.id); setLogDraft({ date: l.date, days: l.days, note: l.note || "" }); };
+  const startEditLog = (l) => { setEditingLogId(l.id); setLogDraft({ date: l.date, days: l.days, note: l.note || "", dailyRate: l.dailyRate ?? workerById[l.workerId]?.dailyRate ?? "" }); };
   const cancelEditLog = () => { setEditingLogId(null); setLogDraft(null); };
-  const saveEditLog = (id) => { updateWorkLog(id, { ...logDraft, days: Number(logDraft.days) || 0 }); setEditingLogId(null); setLogDraft(null); };
+  const saveEditLog = (id) => { updateWorkLog(id, { ...logDraft, days: Number(logDraft.days) || 0, dailyRate: Number(logDraft.dailyRate) || 0 }); setEditingLogId(null); setLogDraft(null); };
   const [editingAttendId, setEditingAttendId] = useState(null);
   const [attendDraft, setAttendDraft] = useState(null);
   const startEditAttend = (l) => { setEditingAttendId(l.id); setAttendDraft({ date: l.date, headcount: l.headcount, note: l.note || "" }); };
@@ -2612,6 +2632,7 @@ function LaborTab({
         month,
         items: items.slice().sort((a, b) => (a.date < b.date ? 1 : -1)),
         days: items.reduce((s, l) => s + (Number(l.days ?? l.headcount) || 0), 0),
+        wage: items.reduce((s, l) => s + (Number(l.days) || 0) * rateOf(l), 0),
       }));
   };
 
@@ -2641,12 +2662,12 @@ function LaborTab({
   };
 
   const handleExportExcel = () => exportExcel("師傅出工與薪資", [
-    { name: "出工明細", rows: workLogs.map((l) => ({ 日期: l.date, 師傅: workerById[l.workerId]?.name || "已刪除師傅", 天數: Number(l.days) || 0, 日薪: Number(workerById[l.workerId]?.dailyRate) || 0, 薪資: (Number(l.days) || 0) * (Number(workerById[l.workerId]?.dailyRate) || 0), 備註: l.note || "" })) },
-    { name: "依師傅彙總（目前區間）", rows: laborSummaryByWorker.map((r) => ({ 師傅: workerById[r.workerId]?.name || "已刪除師傅", 日薪: Number(workerById[r.workerId]?.dailyRate) || 0, 出工天數: r.days, 應付薪資: r.wage })) },
+    { name: "出工明細", rows: workLogs.map((l) => ({ 日期: l.date, 師傅: workerById[l.workerId]?.name || "已刪除師傅", 天數: Number(l.days) || 0, 日薪: rateOf(l), 薪資: (Number(l.days) || 0) * rateOf(l), 備註: l.note || "" })) },
+    { name: "依師傅彙總（目前區間）", rows: laborSummaryByWorker.map((r) => ({ 師傅: workerById[r.workerId]?.name || "已刪除師傅", 出工天數: r.days, 應付薪資: r.wage })) },
   ]);
   const handleExportWord = () => exportWord("師傅出工與薪資", "師傅出工與薪資", [
-    { title: "薪資彙總（" + rangeLabel + "）", headers: ["師傅", "日薪", "出工天數", "應付薪資"], rows: laborSummaryByWorker.map((r) => [workerById[r.workerId]?.name || "已刪除師傅", fmtMoney(workerById[r.workerId]?.dailyRate), fmtNum(r.days), fmtMoney(r.wage)]) },
-    { title: "出工明細", headers: ["日期", "師傅", "天數", "薪資", "備註"], rows: workLogs.map((l) => [l.date, workerById[l.workerId]?.name || "已刪除師傅", l.days, fmtMoney((Number(l.days) || 0) * (Number(workerById[l.workerId]?.dailyRate) || 0)), l.note || ""]) },
+    { title: "薪資彙總（" + rangeLabel + "）", headers: ["師傅", "出工天數", "應付薪資"], rows: laborSummaryByWorker.map((r) => [workerById[r.workerId]?.name || "已刪除師傅", fmtNum(r.days), fmtMoney(r.wage)]) },
+    { title: "出工明細", headers: ["日期", "師傅", "天數", "日薪", "薪資", "備註"], rows: workLogs.map((l) => [l.date, workerById[l.workerId]?.name || "已刪除師傅", l.days, fmtMoney(rateOf(l)), fmtMoney((Number(l.days) || 0) * rateOf(l)), l.note || ""]) },
   ]);
 
   return (
@@ -2704,7 +2725,14 @@ function LaborTab({
         <div className="wel-card-title"><HardHat size={14} /> 登記出工</div>
         <div className="wel-form-grid">
           <Field label="師傅">
-            <select value={workLogForm.workerId} onChange={(e) => setWorkLogForm({ ...workLogForm, workerId: e.target.value })}>
+            <select
+              value={workLogForm.workerId}
+              onChange={(e) => {
+                const workerId = e.target.value;
+                const w = workers.find((x) => x.id === workerId);
+                setWorkLogForm({ ...workLogForm, workerId, dailyRate: w?.dailyRate ?? workLogForm.dailyRate });
+              }}
+            >
               <option value="" disabled>請選擇</option>
               {workers.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
             </select>
@@ -2715,10 +2743,20 @@ function LaborTab({
           <Field label="出工天數">
             <input type="number" min="0" step="0.5" value={workLogForm.days} onChange={(e) => setWorkLogForm({ ...workLogForm, days: e.target.value })} />
           </Field>
+          <Field label="當天日薪（元/天）">
+            <select value={workLogForm.dailyRate} onChange={(e) => setWorkLogForm({ ...workLogForm, dailyRate: e.target.value })}>
+              <option value="" disabled>請選擇日薪…</option>
+              {!WAGE_OPTIONS.includes(Number(workLogForm.dailyRate)) && workLogForm.dailyRate !== "" && workLogForm.dailyRate != null && (
+                <option value={workLogForm.dailyRate}>{fmtMoney(workLogForm.dailyRate)}（原設定）</option>
+              )}
+              {WAGE_OPTIONS.map((v) => <option key={v} value={v}>{fmtMoney(v)}</option>)}
+            </select>
+          </Field>
           <Field label="備註" wide>
             <input placeholder="選填，例：3樓配管" value={workLogForm.note} onChange={(e) => setWorkLogForm({ ...workLogForm, note: e.target.value })} />
           </Field>
         </div>
+        <div className="muted" style={{ fontSize: 11, marginTop: -6, marginBottom: 8 }}>提示：日薪預設帶入該師傅目前設定的日薪，這筆可以再調整，只會套用在這一天，不會影響其他已登記的出工紀錄或師傅的預設日薪。</div>
         <button type="button" className="wel-btn-primary" onClick={submitWorkLog} disabled={workers.length === 0}><Plus size={15} /> 新增出工紀錄</button>
       </div>
 
@@ -2751,7 +2789,7 @@ function LaborTab({
 
         <table className="wel-table" style={{ marginTop: 12 }}>
           <thead>
-            <tr><th>師傅</th><th className="right">日薪</th><th className="right">出工天數</th><th className="right">應付薪資</th></tr>
+            <tr><th>師傅</th><th className="right">目前日薪</th><th className="right">出工天數</th><th className="right">應付薪資</th></tr>
           </thead>
           <tbody>
             {laborSummaryByWorker.length === 0 && (<tr><td colSpan={4}><Empty text="此區間尚無出工紀錄" /></td></tr>)}
@@ -2787,7 +2825,7 @@ function LaborTab({
                           ) : (
                             <table className="wel-table">
                               <thead>
-                                <tr><th>日期</th><th>上下班時間</th><th className="right">天數</th><th>備註</th></tr>
+                                <tr><th>日期</th><th>上下班時間</th><th className="right">天數</th><th className="right">日薪</th><th>備註</th></tr>
                               </thead>
                               <tbody>
                                 {detailLogs.map((l) => (
@@ -2798,6 +2836,7 @@ function LaborTab({
                                       {l.overtimeHours > 0 ? <span className="muted" style={{ marginLeft: 6 }}>（加班 {l.overtimeHours} 小時）</span> : null}
                                     </td>
                                     <td className="right mono">{fmtNum(l.days)}</td>
+                                    <td className="right mono">{fmtMoney(rateOf(l))}</td>
                                     <td className="muted">{l.note || "—"}</td>
                                   </tr>
                                 ))}
@@ -2822,7 +2861,7 @@ function LaborTab({
         {workers.map((w) => {
           const logs = logsByWorker[w.id] || [];
           const totalDays = logs.reduce((s, l) => s + (Number(l.days) || 0), 0);
-          const totalWage = totalDays * (Number(w.dailyRate) || 0);
+          const totalWage = logs.reduce((s, l) => s + (Number(l.days) || 0) * rateOf(l), 0);
           const isOpen = expandedWorker === w.id;
           const months = isOpen ? monthGroup(logs) : [];
           return (
@@ -2843,7 +2882,7 @@ function LaborTab({
                       <div key={mg.month} className="wel-item-floor-group">
                         <button type="button" className="wel-item-group-label wel-item-group-toggle" onClick={() => toggleMonth(mKey)}>
                           {mOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                          {mg.month} · {fmtNum(mg.days)} 天 · {fmtMoney(mg.days * (Number(w.dailyRate) || 0))}
+                          {mg.month} · {fmtNum(mg.days)} 天 · {fmtMoney(mg.wage)}
                         </button>
                         {mOpen && (
                           <div className="wel-template-rows">
@@ -2852,6 +2891,16 @@ function LaborTab({
                                 <div key={l.id} className="wel-attendance-item">
                                   <input type="date" value={logDraft.date} onChange={(e) => setLogDraft({ ...logDraft, date: e.target.value })} style={{ width: 130 }} />
                                   <input type="number" min="0" step="0.5" value={logDraft.days} onChange={(e) => setLogDraft({ ...logDraft, days: e.target.value })} style={{ width: 60 }} />
+                                  <select
+                                    className="wel-inline-rate"
+                                    value={logDraft.dailyRate}
+                                    onChange={(e) => setLogDraft({ ...logDraft, dailyRate: e.target.value })}
+                                  >
+                                    {!WAGE_OPTIONS.includes(Number(logDraft.dailyRate)) && logDraft.dailyRate !== "" && logDraft.dailyRate != null && (
+                                      <option value={logDraft.dailyRate}>{fmtMoney(logDraft.dailyRate)}（原設定）</option>
+                                    )}
+                                    {WAGE_OPTIONS.map((v) => <option key={v} value={v}>{fmtMoney(v)}</option>)}
+                                  </select>
                                   <input placeholder="備註" value={logDraft.note} onChange={(e) => setLogDraft({ ...logDraft, note: e.target.value })} style={{ flex: 1 }} />
                                   <button className="wel-icon-btn" onClick={() => saveEditLog(l.id)}><CheckCircle2 size={13} /></button>
                                   <button className="wel-icon-btn" onClick={cancelEditLog}><X size={13} /></button>
@@ -2860,6 +2909,7 @@ function LaborTab({
                                 <div key={l.id} className="wel-attendance-item wel-row-clickable" onClick={() => startEditLog(l)}>
                                   <span className="mono">{l.date}</span>
                                   <span className="mono muted">{fmtNum(l.days)} 天</span>
+                                  <span className="mono muted">日薪 {fmtMoney(rateOf(l))}</span>
                                   <span className="muted" style={{ flex: 1 }}>{l.note || "—"}</span>
                                   <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteWorkLog(l.id); }}><X size={13} /></button>
                                 </div>
