@@ -652,7 +652,7 @@ export default function WaterElectricLedger() {
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
   const emptyCapitalContribution = { date: todayStr(), amount: "", note: "" };
   const [capitalForm, setCapitalForm] = useState(emptyCapitalContribution);
-  const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr(), hasInvoice: true };
+  const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr(), hasInvoice: true, applyTax: false, taxRate: 5 };
   const [fixedAssetForm, setFixedAssetForm] = useState(emptyFixedAsset);
   const emptyOtherExpense = { date: todayStr(), itemName: "", supplier: "", amount: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
   const [otherExpenseForm, setOtherExpenseForm] = useState(emptyOtherExpense);
@@ -4645,15 +4645,16 @@ function FixedAssetsTab({
 }) {
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState(null);
-  const startEdit = (f) => { setExpandedId(f.id); setDraft({ name: f.name, quantity: f.quantity, amount: f.amount, date: f.date, hasInvoice: !!f.hasInvoice }); };
+  const startEdit = (f) => { setExpandedId(f.id); setDraft({ name: f.name, quantity: f.quantity, amount: f.amount, date: f.date, hasInvoice: !!f.hasInvoice, applyTax: !!f.applyTax, taxRate: f.taxRate ?? 5 }); };
   const cancelEdit = () => { setExpandedId(null); setDraft(null); };
   const saveEdit = (id) => { updateFixedAsset(id, { ...draft, quantity: Number(draft.quantity) || 1, amount: Number(draft.amount) || 0 }); setExpandedId(null); setDraft(null); };
   const sortedAssets = useMemo(() => fixedAssets.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [fixedAssets]);
+  const taxOf = (f) => (f.hasInvoice && f.applyTax ? (Number(f.amount) || 0) * (Number(f.quantity) || 0) * (Number(f.taxRate) || 0) / 100 : 0);
   const handleExportExcel = () => exportExcel("固定資產", [
-    { name: "固定資產清單", rows: sortedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 發票: f.hasInvoice ? "有發票" : "無發票", 購買日期: f.date })) },
+    { name: "固定資產清單", rows: sortedAssets.map((f) => ({ 工具名稱: f.name, 數量: Number(f.quantity) || 0, 購買金額: Number(f.amount) || 0, 小計: (Number(f.quantity) || 0) * (Number(f.amount) || 0), 發票: f.hasInvoice ? "有發票" : "無發票", 稅額: taxOf(f), 購買日期: f.date })) },
   ]);
   const handleExportWord = () => exportWord("固定資產", "固定資產清點清單", [
-    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "發票", "購買日期"], rows: sortedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.hasInvoice ? "有發票" : "無發票", f.date]) },
+    { title: "固定資產清單", headers: ["工具名稱", "數量", "購買金額", "小計", "發票", "稅額", "購買日期"], rows: sortedAssets.map((f) => [f.name, f.quantity, fmtMoney(f.amount), fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0)), f.hasInvoice ? "有發票" : "無發票", taxOf(f) ? fmtMoney(taxOf(f)) : "—", f.date]) },
   ]);
   return (
     <div className="wel-page">
@@ -4696,6 +4697,32 @@ function FixedAssetsTab({
               <option value="no">無發票</option>
             </select>
           </Field>
+          {fixedAssetForm.hasInvoice && (
+            <Field label="營業稅" wide>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={fixedAssetForm.applyTax}
+                    onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, applyTax: e.target.checked })}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  計算稅額
+                </label>
+                {fixedAssetForm.applyTax && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                    稅率
+                    <input
+                      type="number" min="0" step="0.1" value={fixedAssetForm.taxRate}
+                      onChange={(e) => setFixedAssetForm({ ...fixedAssetForm, taxRate: e.target.value })}
+                      style={{ width: 60, height: 32 }}
+                    />
+                    %
+                  </span>
+                )}
+              </div>
+            </Field>
+          )}
         </div>
         <button type="button" className="wel-btn-primary" onClick={submitFixedAsset}><Plus size={15} /> 新增固定資產</button>
       </div>
@@ -4723,7 +4750,14 @@ function FixedAssetsTab({
                 <td className="right mono">{fmtMoney(f.amount)}</td>
                 <td className="right mono strong" style={{ color: "var(--amber)" }}>{fmtMoney((Number(f.quantity) || 0) * (Number(f.amount) || 0))}</td>
                 <td className="mono muted">{f.date}</td>
-                <td>{f.hasInvoice ? <span className="wel-chip-info">有發票</span> : <span className="wel-chip">無發票</span>}</td>
+                <td>
+                  {f.hasInvoice ? <span className="wel-chip-info">有發票</span> : <span className="wel-chip">無發票</span>}
+                  {f.hasInvoice && f.applyTax && (
+                    <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>
+                      稅額 {fmtMoney(taxOf(f))}（{fmtNum(f.taxRate)}%）
+                    </div>
+                  )}
+                </td>
                 <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteFixedAsset(f.id); }}><Trash2 size={14} /></button></td>
               </tr>
               {isOpen && draft && (
@@ -4749,6 +4783,31 @@ function FixedAssetsTab({
                             <option value="no">無發票</option>
                           </select>
                         </Field>
+                        {draft.hasInvoice && (
+                          <Field label="營業稅" wide>
+                            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                                <input
+                                  type="checkbox" checked={draft.applyTax}
+                                  onChange={(e) => setDraft({ ...draft, applyTax: e.target.checked })}
+                                  style={{ width: 16, height: 16 }}
+                                />
+                                計算稅額
+                              </label>
+                              {draft.applyTax && (
+                                <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                                  稅率
+                                  <input
+                                    type="number" min="0" step="0.1" value={draft.taxRate}
+                                    onChange={(e) => setDraft({ ...draft, taxRate: e.target.value })}
+                                    style={{ width: 60, height: 32 }}
+                                  />
+                                  %
+                                </span>
+                              )}
+                            </div>
+                          </Field>
+                        )}
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button type="button" className="wel-btn-primary" onClick={() => saveEdit(f.id)}>儲存修改</button>
