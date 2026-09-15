@@ -2013,6 +2013,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
       itemName: val,
       unit: m && m.unit ? m.unit : orderForm.unit,
       unitPrice: m && m.defaultPrice !== "" && m.defaultPrice != null ? m.defaultPrice : orderForm.unitPrice,
+      categoryId: m && m.categoryId ? m.categoryId : orderForm.categoryId,
     });
   };
   const handlePickSupplier = (e) => {
@@ -2094,11 +2095,15 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                       />
                       <input className="wel-manager-mini" placeholder="單位" value={m.unit || ""} onChange={(e) => updateMaterialItem(m.id, { unit: e.target.value })} />
                       <input className="wel-manager-mini" type="number" placeholder="單價" value={m.defaultPrice === "" || m.defaultPrice == null ? "" : m.defaultPrice} onChange={(e) => updateMaterialItem(m.id, { defaultPrice: e.target.value })} />
+                      <select className="wel-manager-mini" style={{ width: 110 }} value={m.categoryId || ""} onChange={(e) => updateMaterialItem(m.id, { categoryId: e.target.value })}>
+                        <option value="">未歸類</option>
+                        {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
                       <button type="button" className="wel-icon-btn" onClick={() => removeMaterialItem(m.id)}><Trash2 size={13} /></button>
                     </div>
                   ))}
                 </div>
-                <div className="muted" style={{ fontSize: 11 }}>提示：直接修改上面的名稱／單位／單價即可更新，改名稱會自動同步更新過去的叫貨紀錄。</div>
+                <div className="muted" style={{ fontSize: 11 }}>提示：直接修改上面的名稱／單位／單價即可更新，改名稱會自動同步更新過去的叫貨紀錄；設定類別後，之後挑選這個品項會自動帶入該類別（不影響過去已新增的紀錄）。</div>
                 <button type="button" className="wel-btn-ghost" onClick={() => setManageOpen(false)}>收合品項管理</button>
               </div>
             )}
@@ -4314,6 +4319,10 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
                   />
                   <input className="wel-manager-mini" placeholder="單位" value={m.unit || ""} onChange={(e) => updateMaterialItem(m.id, { unit: e.target.value })} />
                   <input className="wel-manager-mini" type="number" placeholder="單價" value={m.defaultPrice === "" || m.defaultPrice == null ? "" : m.defaultPrice} onChange={(e) => updateMaterialItem(m.id, { defaultPrice: e.target.value })} />
+                  <select className="wel-manager-mini" style={{ width: 110 }} value={m.categoryId || ""} onChange={(e) => updateMaterialItem(m.id, { categoryId: e.target.value })}>
+                    <option value="">未歸類</option>
+                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
                   <span className="muted mono" style={{ fontSize: 11.5, width: 64, textAlign: "right" }}>{orderCountFor(m.name)} 筆紀錄</span>
                   <button type="button" className="wel-icon-btn" onClick={() => removeMaterialItem(m.id)}><Trash2 size={13} /></button>
                 </div>
@@ -4326,7 +4335,7 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
             );
           })}
         </div>
-        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>提示：改名稱會自動同步更新過去的叫貨/領用紀錄；刪除只會移除選單中的品項，不會刪除過去已經新增的叫貨紀錄。</div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>提示：改名稱會自動同步更新過去的叫貨/領用紀錄；設定類別後，之後在叫貨紀錄挑選這個品項會自動帶入該類別（不會更動過去已新增的紀錄）；刪除只會移除選單中的品項，不會刪除過去已經新增的叫貨紀錄。</div>
       </div>
     </div>
   );
