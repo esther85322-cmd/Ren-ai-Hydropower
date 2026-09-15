@@ -9,7 +9,7 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll } from "./storage";
 
@@ -148,6 +148,7 @@ export default function WaterElectricLedger() {
   const [contractWorkLogs, setContractWorkLogs] = useState([]);
   const [contractItems, setContractItems] = useState([]);
   const [discussionItems, setDiscussionItems] = useState([]);
+  const [notebookItems, setNotebookItems] = useState([]);
   const [capitalContributions, setCapitalContributions] = useState([]);
   const [fixedAssets, setFixedAssets] = useState([]);
   const [otherExpenses, setOtherExpenses] = useState([]);
@@ -170,6 +171,7 @@ export default function WaterElectricLedger() {
       const cfi = data.clientflooritems ?? [];
       const cwl = data.contractworklogs ?? [];
       const di = data.discussionitems ?? [];
+      const nb = data.notebookitems ?? [];
       const ci = data.contractitems ?? [];
       const mi = data.materialitems ?? [];
       const sup = data.suppliers ?? [];
@@ -198,6 +200,7 @@ export default function WaterElectricLedger() {
       setClientFloorItems(cfi);
       setContractWorkLogs(cwl);
       setDiscussionItems(di);
+      setNotebookItems(nb);
       setContractItems(ci);
       setMaterialItems(mi);
       setSuppliers(sup);
@@ -295,6 +298,11 @@ export default function WaterElectricLedger() {
   const persistDiscussionItems = useCallback(async (list) => {
     setSaving(true);
     await storageSet("discussionitems", list);
+    setSaving(false);
+  }, []);
+  const persistNotebookItems = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("notebookitems", list);
     setSaving(false);
   }, []);
   const persistCapitalContributions = useCallback(async (list) => {
@@ -400,6 +408,10 @@ export default function WaterElectricLedger() {
   const openDiscussionCount = useMemo(
     () => siteDiscussionItems.filter((d) => !d.resolved).length,
     [siteDiscussionItems]
+  );
+  const siteNotebookItems = useMemo(
+    () => (isAllSites ? notebookItems : notebookItems.filter((n) => n.siteId === currentSiteId)),
+    [notebookItems, currentSiteId, isAllSites]
   );
   const siteCapitalContributions = useMemo(
     () => (isAllSites ? capitalContributions : capitalContributions.filter((c) => c.siteId === currentSiteId)),
@@ -650,6 +662,8 @@ export default function WaterElectricLedger() {
   const [clientPaymentForm, setClientPaymentForm] = useState(emptyClientPayment);
   const emptyDiscussion = { date: todayStr(), topic: "", note: "", resolved: false, result: "" };
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
+  const emptyNotebookItem = { date: todayStr(), title: "", content: "" };
+  const [notebookForm, setNotebookForm] = useState(emptyNotebookItem);
   const emptyCapitalContribution = { date: todayStr(), amount: "", note: "" };
   const [capitalForm, setCapitalForm] = useState(emptyCapitalContribution);
   const emptyFixedAsset = { name: "", quantity: 1, amount: "", date: todayStr(), hasInvoice: true, applyTax: false, taxRate: 5 };
@@ -1297,6 +1311,31 @@ export default function WaterElectricLedger() {
     persistDiscussionItems(next);
   };
 
+  // ---- 大項記事本 (freeform notebook entries) ----
+  const submitNotebookItem = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增記事本項目"); return; }
+    if (!notebookForm.title.trim()) {
+      showToast("請填寫「標題」後再新增記事本項目");
+      return;
+    }
+    const rec = { id: uid(), ...notebookForm, siteId: currentSiteId };
+    const next = [rec, ...notebookItems];
+    setNotebookItems(next);
+    persistNotebookItems(next);
+    setNotebookForm(emptyNotebookItem);
+  };
+  const updateNotebookItem = (id, patch) => {
+    const next = notebookItems.map((n) => (n.id === id ? { ...n, ...patch } : n));
+    setNotebookItems(next);
+    persistNotebookItems(next);
+  };
+  const deleteNotebookItem = (id) => {
+    const next = notebookItems.filter((n) => n.id !== id);
+    setNotebookItems(next);
+    persistNotebookItems(next);
+  };
+
   const addSite = (name, address, copyFromSiteId) => {
     const nm = (name || "").trim();
     if (!nm) return;
@@ -1451,6 +1490,7 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<Handshake size={16} />} label="發包與領款" active={tab === "contracts"} onClick={() => setTab("contracts")} />
             <NavBtn icon={<ListOrdered size={16} />} label="項目總表" active={tab === "summary"} onClick={() => setTab("summary")} />
             <NavBtn icon={<MessageSquare size={16} />} label="備註討論" active={tab === "discussion"} onClick={() => setTab("discussion")} />
+            <NavBtn icon={<NotebookPen size={16} />} label="大項記事本" active={tab === "notebook"} onClick={() => setTab("notebook")} />
             <NavBtn icon={<Wallet size={16} />} label="甲方收款" active={tab === "client"} onClick={() => setTab("client")} />
             <NavBtn icon={<PiggyBank size={16} />} label="投入成本" active={tab === "capital"} onClick={() => setTab("capital")} />
             <NavBtn icon={<Hammer size={16} />} label="固定資產" active={tab === "assets"} onClick={() => setTab("assets")} />
@@ -1702,6 +1742,21 @@ export default function WaterElectricLedger() {
               sites={sites}
               setCurrentSiteId={setCurrentSiteId}
               currentSiteId={currentSiteId}
+              showToast={showToast}
+            />
+          )}
+          {tab === "notebook" && (
+            <NotebookTab
+              notebookItems={siteNotebookItems}
+              siteById={siteById}
+              notebookForm={notebookForm}
+              setNotebookForm={setNotebookForm}
+              submitNotebookItem={submitNotebookItem}
+              updateNotebookItem={updateNotebookItem}
+              deleteNotebookItem={deleteNotebookItem}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
               showToast={showToast}
             />
           )}
@@ -4531,6 +4586,101 @@ function DiscussionTab({
                     onChange={(e) => updateDiscussionResult(d.id, e.target.value)}
                   />
                 </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NotebookTab({
+  notebookItems, siteById, notebookForm, setNotebookForm, submitNotebookItem, updateNotebookItem, deleteNotebookItem,
+  isAllSites, sites, setCurrentSiteId, showToast,
+}) {
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const startEdit = (n) => { setEditingId(n.id); setEditDraft({ date: n.date, title: n.title, content: n.content || "" }); };
+  const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
+  const saveEdit = (id) => {
+    if (!editDraft.title.trim()) { showToast("請填寫「標題」後再儲存"); return; }
+    updateNotebookItem(id, editDraft);
+    setEditingId(null);
+    setEditDraft(null);
+  };
+  const sortedItems = useMemo(() => notebookItems.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [notebookItems]);
+
+  const handleExportExcel = () => exportExcel("大項記事本", [{
+    name: "記事本",
+    rows: sortedItems.map((n) => ({ 日期: n.date, 標題: n.title, 內容: n.content || "" })),
+  }]);
+  const handleExportWord = () => exportWord("大項記事本", "大項記事本", [{
+    title: "大項記事本",
+    headers: ["日期", "標題", "內容"],
+    rows: sortedItems.map((n) => [n.date, n.title, n.content || ""]),
+  }]);
+
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">記事 · NOTEBOOK</div>
+          <h1 className="wel-h1">大項記事本</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增記事本項目" />}
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><NotebookPen size={14} /> 新增記事本項目</div>
+        <div className="wel-form-grid">
+          <Field label="日期">
+            <input type="date" value={notebookForm.date} onChange={(e) => setNotebookForm({ ...notebookForm, date: e.target.value })} />
+          </Field>
+          <Field label="標題" wide>
+            <input placeholder="例：3樓浴室防水工程" value={notebookForm.title} onChange={(e) => setNotebookForm({ ...notebookForm, title: e.target.value })} />
+          </Field>
+          <Field label="內容" wide>
+            <input placeholder="選填" value={notebookForm.content} onChange={(e) => setNotebookForm({ ...notebookForm, content: e.target.value })} />
+          </Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submitNotebookItem}><Plus size={15} /> 新增記事本項目</button>
+      </div>
+
+      <div className="wel-discussion-list">
+        {sortedItems.length === 0 && <div className="wel-card"><Empty text="尚無記事本項目" /></div>}
+        {sortedItems.map((n) => (
+          <div key={n.id} className="wel-discussion-card">
+            {editingId === n.id ? (
+              <div className="wel-timeline-wrap" style={{ padding: 0 }}>
+                <div className="wel-form-grid">
+                  <Field label="日期">
+                    <input type="date" value={editDraft.date} onChange={(e) => setEditDraft({ ...editDraft, date: e.target.value })} />
+                  </Field>
+                  <Field label="標題" wide>
+                    <input value={editDraft.title} onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })} />
+                  </Field>
+                  <Field label="內容" wide>
+                    <input value={editDraft.content} onChange={(e) => setEditDraft({ ...editDraft, content: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" className="wel-btn-primary" onClick={() => saveEdit(n.id)}>儲存修改</button>
+                  <button type="button" className="wel-btn-ghost" onClick={cancelEdit}>取消</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="wel-discussion-head">
+                  <span className="wel-discussion-topic">{n.title}</span>
+                  {isAllSites && <span className="wel-tag">{siteById[n.siteId]?.name || "—"}</span>}
+                  <span className="mono muted" style={{ fontSize: 11.5 }}>{n.date}</span>
+                  <button className="wel-icon-btn" onClick={() => startEdit(n)}><Pencil size={14} /></button>
+                  <button className="wel-icon-btn" onClick={() => deleteNotebookItem(n.id)}><Trash2 size={14} /></button>
+                </div>
+                {n.content && <div className="wel-discussion-note muted">{n.content}</div>}
               </>
             )}
           </div>
