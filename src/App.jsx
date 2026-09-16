@@ -621,12 +621,12 @@ export default function WaterElectricLedger() {
     [siteOtherExpenses]
   );
 
-  const projectGrandTotal = grandTotal + contractPaidTotal + otherExpensesTotal;
+  const projectGrandTotal = grandTotal + contractPaidTotal + otherExpensesTotal + fixedAssetsTotal;
   const profitLoss = clientPaidTotal - projectGrandTotal;
 
   const siteBreakdown = useMemo(() => {
     const map = {};
-    sites.forEach((s) => (map[s.id] = { id: s.id, name: s.name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0, other: 0 }));
+    sites.forEach((s) => (map[s.id] = { id: s.id, name: s.name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0, other: 0, asset: 0 }));
     orders.forEach((o) => {
       if (!map[o.siteId]) return;
       map[o.siteId].material += Number(o.amount) || 0;
@@ -651,10 +651,14 @@ export default function WaterElectricLedger() {
       if (!map[e.siteId]) return;
       map[e.siteId].other += Number(e.amount) || 0;
     });
+    fixedAssets.forEach((f) => {
+      if (!map[f.siteId]) return;
+      map[f.siteId].asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1);
+    });
     return Object.values(map)
-      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other, profit: s.collected - (s.material + s.labor + s.contract + s.other) }))
+      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
       .sort((a, b) => b.total - a.total);
-  }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses]);
+  }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets]);
 
   // ---- forms ----
   const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
@@ -4880,7 +4884,7 @@ function FixedAssetsTab({
       <div className="wel-meter-card">
         <div className="wel-meter-label"><Hammer size={14} /> 固定資產總值</div>
         <div className="wel-meter-sub" style={{ marginTop: 0 }}>
-          <span>生財工具、設備清點，不計入材料／人工／發包總支出</span>
+          <span>生財工具、設備清點，會計入這個案場的總支出／毛利計算</span>
         </div>
         <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--amber)" }}>{fmtMoney(fixedAssetsTotal)}</div>
       </div>
@@ -5392,7 +5396,7 @@ function SiteLandingPage({
         )}
 
         {sites.map((s) => {
-          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0, other: 0 };
+          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0, other: 0, asset: 0 };
           const isEditing = editingId === s.id;
           return (
             <div
@@ -5431,6 +5435,7 @@ function SiteLandingPage({
                   <div className="wel-site-stats">
                     <div><span>投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(stat.capital)}</b></div>
                     <div><span>其他支出</span><b>{fmtMoney(stat.other)}</b></div>
+                    <div><span>固定資產</span><b>{fmtMoney(stat.asset)}</b></div>
                   </div>
                   <div className="wel-site-actions">
                     <span className="wel-site-enter-hint">點擊進入案場 →</span>
