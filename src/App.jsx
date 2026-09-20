@@ -512,7 +512,7 @@ export default function WaterElectricLedger() {
       const key = u.categoryId + "|" + u.itemName;
       if (!map[key])
         map[key] = { key, itemName: u.itemName, categoryId: u.categoryId, unit: u.unit, ordered: 0, used: 0, cost: 0 };
-      map[key].used += Number(u.quantity) || 0;
+      map[key].used += (u.type === "return" ? -1 : 1) * (Number(u.quantity) || 0);
     });
     return Object.values(map)
       .map((it) => {
@@ -662,7 +662,7 @@ export default function WaterElectricLedger() {
 
   // ---- forms ----
   const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
-  const emptyUsage = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", quantity: "", unit: "", location: "" };
+  const emptyUsage = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", quantity: "", unit: "", location: "", type: "out" };
   const [orderForm, setOrderForm] = useState(emptyOrder);
   const [usageForm, setUsageForm] = useState(emptyUsage);
   const [newCatName, setNewCatName] = useState("");
@@ -2426,7 +2426,7 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
   const [editDraft, setEditDraft] = useState(null);
   const startEditUsage = (u) => {
     setExpandedUsageId(u.id);
-    setEditDraft({ date: u.date, categoryId: u.categoryId, itemName: u.itemName, quantity: u.quantity, unit: u.unit || "", location: u.location || "" });
+    setEditDraft({ date: u.date, categoryId: u.categoryId, itemName: u.itemName, quantity: u.quantity, unit: u.unit || "", location: u.location || "", type: u.type || "out" });
   };
   const cancelEditUsage = () => { setExpandedUsageId(null); setEditDraft(null); };
   const saveEditUsage = (id) => {
@@ -2438,12 +2438,12 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
   const sortedUsages = useMemo(() => usages.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [usages]);
   const handleExportExcel = () => exportExcel("領用紀錄", [{
     name: "領用紀錄",
-    rows: sortedUsages.map((u) => ({ 日期: u.date, 類別: catById[u.categoryId]?.name || "", 品項: u.itemName, 數量: Number(u.quantity) || 0, 單位: u.unit || "", 工地位置: u.location || "" })),
+    rows: sortedUsages.map((u) => ({ 日期: u.date, 類別: catById[u.categoryId]?.name || "", 品項: u.itemName, 類型: u.type === "return" ? "退回" : "領用", 數量: Number(u.quantity) || 0, 單位: u.unit || "", 工地位置: u.location || "" })),
   }]);
   const handleExportWord = () => exportWord("領用紀錄", "領料 / 使用紀錄", [{
     title: "領料 / 使用紀錄",
-    headers: ["日期", "類別", "品項", "數量", "單位", "工地位置"],
-    rows: sortedUsages.map((u) => [u.date, catById[u.categoryId]?.name || "", u.itemName, u.quantity, u.unit || "", u.location || ""]),
+    headers: ["日期", "類別", "品項", "類型", "數量", "單位", "工地位置"],
+    rows: sortedUsages.map((u) => [u.date, catById[u.categoryId]?.name || "", u.itemName, u.type === "return" ? "退回" : "領用", u.quantity, u.unit || "", u.location || ""]),
   }]);
   return (
     <div className="wel-page">
@@ -2471,7 +2471,13 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
             <input list="wel-items2" placeholder="需與叫貨品項一致" value={usageForm.itemName} onChange={(e) => setUsageForm({ ...usageForm, itemName: e.target.value })} />
             <datalist id="wel-items2">{itemSuggestions.map((s) => <option key={s} value={s} />)}</datalist>
           </Field>
-          <Field label="使用數量">
+          <Field label="類型">
+            <select value={usageForm.type || "out"} onChange={(e) => setUsageForm({ ...usageForm, type: e.target.value })}>
+              <option value="out">領用（出庫）</option>
+              <option value="return">退回（沒用完，還回庫存）</option>
+            </select>
+          </Field>
+          <Field label={usageForm.type === "return" ? "退回數量" : "使用數量"}>
             <input type="number" step="any" min="0" value={usageForm.quantity} onChange={(e) => setUsageForm({ ...usageForm, quantity: e.target.value })} />
           </Field>
           <Field label="單位">
@@ -2481,18 +2487,21 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
             <input placeholder="選填，例：3樓衛浴配管" value={usageForm.location} onChange={(e) => setUsageForm({ ...usageForm, location: e.target.value })} />
           </Field>
         </div>
-        <button type="button" className="wel-btn-primary" onClick={submitUsage}><Plus size={15} /> 新增領用紀錄</button>
+        <button type="button" className="wel-btn-primary" onClick={submitUsage}>
+          <Plus size={15} /> {usageForm.type === "return" ? "新增退回紀錄" : "新增領用紀錄"}
+        </button>
       </div>
 
       <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
         <table className="wel-table">
           <thead>
-            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>類別</th><th>品項</th><th className="right">數量</th><th>工地 / 用途</th><th></th></tr>
+            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>類別</th><th>品項</th><th>類型</th><th className="right">數量</th><th>工地 / 用途</th><th></th></tr>
           </thead>
           <tbody>
-            {sortedUsages.length === 0 && (<tr><td colSpan={isAllSites ? 7 : 6}><Empty text="尚未新增任何領用紀錄" /></td></tr>)}
+            {sortedUsages.length === 0 && (<tr><td colSpan={isAllSites ? 8 : 7}><Empty text="尚未新增任何領用紀錄" /></td></tr>)}
             {sortedUsages.map((u) => {
               const isOpen = expandedUsageId === u.id;
+              const isReturn = u.type === "return";
               return (
               <React.Fragment key={u.id}>
               <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEditUsage() : startEditUsage(u))}>
@@ -2505,13 +2514,14 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
                     {u.itemName}
                   </span>
                 </td>
-                <td className="right mono">{fmtNum(u.quantity)} {u.unit}</td>
+                <td>{isReturn ? <span className="wel-chip-info">退回</span> : <span className="muted">領用</span>}</td>
+                <td className="right mono" style={isReturn ? { color: "var(--green)" } : undefined}>{isReturn ? "+" : ""}{fmtNum(u.quantity)} {u.unit}</td>
                 <td className="muted">{u.location || "—"}</td>
                 <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteUsage(u.id); }}><Trash2 size={14} /></button></td>
               </tr>
               {isOpen && editDraft && (
                 <tr onClick={(e) => e.stopPropagation()}>
-                  <td colSpan={isAllSites ? 7 : 6} style={{ padding: 0 }}>
+                  <td colSpan={isAllSites ? 8 : 7} style={{ padding: 0 }}>
                     <div className="wel-timeline-wrap">
                       <div className="wel-form-grid">
                         <Field label="日期">
@@ -2525,7 +2535,13 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
                         <Field label="品項名稱">
                           <input list="wel-items2" value={editDraft.itemName} onChange={(e) => setEditDraft({ ...editDraft, itemName: e.target.value })} />
                         </Field>
-                        <Field label="使用數量">
+                        <Field label="類型">
+                          <select value={editDraft.type || "out"} onChange={(e) => setEditDraft({ ...editDraft, type: e.target.value })}>
+                            <option value="out">領用（出庫）</option>
+                            <option value="return">退回（沒用完，還回庫存）</option>
+                          </select>
+                        </Field>
+                        <Field label={editDraft.type === "return" ? "退回數量" : "使用數量"}>
                           <input type="number" step="any" min="0" value={editDraft.quantity} onChange={(e) => setEditDraft({ ...editDraft, quantity: e.target.value })} />
                         </Field>
                         <Field label="單位">
@@ -5351,6 +5367,11 @@ function SiteLandingPage({
     () => siteBreakdown.reduce((s, b) => s + b.total, 0),
     [siteBreakdown]
   );
+  const allSitesIncome = useMemo(
+    () => siteBreakdown.reduce((s, b) => s + b.collected, 0),
+    [siteBreakdown]
+  );
+  const allSitesProfit = allSitesIncome - allSitesTotal;
 
   const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setEditDraft({ name: s.name, address: s.address || "" }); };
   const saveEdit = (e) => { e.stopPropagation(); renameSite(editingId, editDraft.name.trim() || "未命名案場", editDraft.address.trim()); setEditingId(null); };
@@ -5390,7 +5411,9 @@ function SiteLandingPage({
             <div className="wel-site-address muted">查看所有案場的加總與比較</div>
             <div className="wel-site-stats">
               <div><span>案場數</span><b>{sites.length}</b></div>
+              <div><span>合計收入</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesIncome)}</b></div>
               <div><span>合計總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(allSitesTotal)}</b></div>
+              <div><span>{allSitesProfit >= 0 ? "合計毛利" : "合計虧損"}</span><b style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</b></div>
             </div>
           </div>
         )}
