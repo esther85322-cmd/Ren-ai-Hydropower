@@ -621,7 +621,7 @@ export default function WaterElectricLedger() {
     [siteOtherExpenses]
   );
 
-  const projectGrandTotal = grandTotal + contractPaidTotal + otherExpensesTotal + fixedAssetsTotal;
+  const projectGrandTotal = grandTotal + contractPaidTotal + otherExpensesTotal + fixedAssetsTotal + capitalTotal;
   const profitLoss = clientPaidTotal - projectGrandTotal;
 
   const siteBreakdown = useMemo(() => {
@@ -656,7 +656,7 @@ export default function WaterElectricLedger() {
       map[f.siteId].asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1);
     });
     return Object.values(map)
-      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
+      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset + s.capital, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset + s.capital) }))
       .sort((a, b) => b.total - a.total);
   }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets]);
 
@@ -4791,7 +4791,7 @@ function CapitalTab({
       <div className="wel-meter-card">
         <div className="wel-meter-label"><PiggyBank size={14} /> 累計投入成本</div>
         <div className="wel-meter-sub" style={{ marginTop: 0 }}>
-          <span>不計入材料／人工／發包總支出，單純記錄自己投入這個案場的資金</span>
+          <span>會計入這個案場的總支出／毛利計算</span>
         </div>
         <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--teal)" }}>{fmtMoney(capitalTotal)}</div>
       </div>
