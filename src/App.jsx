@@ -1094,7 +1094,7 @@ export default function WaterElectricLedger() {
       const price = Number(r.unitPrice);
       return {
         id: uid(), date: meta.date, categoryId: r.categoryId || categories[0]?.id || "", itemName: r.name.trim(), supplier: meta.supplier || "",
-        quantity: qty, unit: r.unit || "", unitPrice: price, note: "收貨單掃描", hasInvoice: !!meta.hasInvoice, applyTax: !!(meta.hasInvoice && meta.applyTax), taxRate: Number(meta.taxRate) || 0,
+        quantity: qty, unit: r.unit || "", unitPrice: price, note: meta.note ?? "收貨單掃描", hasInvoice: !!meta.hasInvoice, applyTax: !!(meta.hasInvoice && meta.applyTax), taxRate: Number(meta.taxRate) || 0,
         siteId: currentSiteId, amount: qty * price,
       };
     });
@@ -2290,6 +2290,7 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
 
 function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, itemSuggestions, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders }) {
   const [scanOpen, setScanOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const startEditOrder = (o) => {
@@ -2388,8 +2389,17 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
               defaultCategoryId={orderForm.categoryId} onConfirmOrders={confirmScannedOrders}
               onClose={() => setScanOpen(false)} showToast={showToast}
             />
+          ) : bulkOpen ? (
+            <BulkOrderPanel
+              categories={categories} catById={catById} materialItems={materialItems} suppliers={suppliers}
+              defaultCategoryId={orderForm.categoryId} onConfirm={confirmScannedOrders}
+              onClose={() => setBulkOpen(false)} showToast={showToast}
+            />
           ) : (
-            <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照辨識收貨單（先校對再存入叫貨）</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className="wel-btn-ghost" onClick={() => setBulkOpen(true)}><ListChecks size={14} /> 多項一次叫貨（勾選多個品項一起輸入）</button>
+              <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照辨識收貨單（先校對再存入叫貨）</button>
+            </div>
           )}
         </div>
       )}
@@ -4161,6 +4171,133 @@ function NoteInput({ value, onCommit, placeholder = "備註" }) {
       onBlur={commit}
       onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
     />
+  );
+}
+
+// 多項一次叫貨：依類別勾選多個品項、各自填數量，一次寫入叫貨紀錄。
+function BulkOrderPanel({ categories, catById, materialItems, suppliers, defaultCategoryId, onConfirm, onClose, showToast }) {
+  const [categoryId, setCategoryId] = useState(defaultCategoryId || categories[0]?.id || "");
+  const [meta, setMeta] = useState({ date: todayStr(), supplier: "", hasInvoice: true, applyTax: false, taxRate: 5 });
+  const [sel, setSel] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const items = useMemo(
+    () => materialItems.filter((m) => m.categoryId === categoryId).sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")),
+    [materialItems, categoryId]
+  );
+  const uncategorizedCount = materialItems.filter((m) => !m.categoryId || !catById[m.categoryId]).length;
+  const base = (m) => ({ include: false, quantity: "", unit: m.unit || "", unitPrice: m.defaultPrice === "" || m.defaultPrice == null ? "" : m.defaultPrice });
+  const rowOf = (m) => sel[m.id] || base(m);
+  const patch = (m, p) => setSel((prev) => ({ ...prev, [m.id]: { ...(prev[m.id] || base(m)), ...p } }));
+  const chosen = materialItems.filter((m) => sel[m.id] && sel[m.id].include);
+  const lineTotal = (m) => (Number(sel[m.id].quantity) || 0) * (Number(sel[m.id].unitPrice) || 0);
+  const total = chosen.reduce((sum, m) => sum + lineTotal(m), 0);
+  const taxOn = meta.hasInvoice && meta.applyTax;
+  const taxTotal = taxOn ? total * (Number(meta.taxRate) || 0) / 100 : 0;
+
+  const confirm = async () => {
+    if (!chosen.length) { showToast("請先勾選要叫貨的品項並填寫數量"); return; }
+    for (const m of chosen) {
+      const r = sel[m.id];
+      if (!(Number(r.quantity) > 0)) { showToast(`「${m.name}」的數量要大於 0`); return; }
+      if (r.unitPrice === "" || !(Number(r.unitPrice) >= 0)) { showToast(`「${m.name}」缺少單價`); return; }
+    }
+    setSaving(true);
+    try {
+      await onConfirm(
+        chosen.map((m) => ({ name: m.name, categoryId: m.categoryId, quantity: sel[m.id].quantity, unit: sel[m.id].unit, unitPrice: sel[m.id].unitPrice })),
+        { ...meta, note: "", addNewItems: false, saveToAlbum: false },
+        null
+      );
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="wel-card wel-form" style={{ borderColor: "var(--teal)" }}>
+      <div className="wel-card-title-row">
+        <div className="wel-card-title"><ListChecks size={14} /> 多項一次叫貨（勾選品項、填數量，一次存入）</div>
+        <button type="button" className="wel-btn-ghost" onClick={onClose}>關閉</button>
+      </div>
+      <div className="wel-form-grid">
+        <Field label="日期"><input type="date" value={meta.date} onChange={(e) => setMeta({ ...meta, date: e.target.value })} /></Field>
+        <Field label="廠商 / 供應商">
+          <select value={meta.supplier} onChange={(e) => setMeta({ ...meta, supplier: e.target.value })}>
+            <option value="">（未指定）</option>
+            {suppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+          </select>
+        </Field>
+        <Field label="有無發票">
+          <select value={meta.hasInvoice ? "yes" : "no"} onChange={(e) => setMeta({ ...meta, hasInvoice: e.target.value === "yes" })}>
+            <option value="yes">有發票</option><option value="no">無發票</option>
+          </select>
+        </Field>
+        {meta.hasInvoice && (
+          <Field label="營業稅" wide>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                <input type="checkbox" checked={meta.applyTax} onChange={(e) => setMeta({ ...meta, applyTax: e.target.checked })} style={{ width: 16, height: 16 }} />
+                計算稅額
+              </label>
+              {meta.applyTax && (
+                <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                  稅率
+                  <input type="number" min="0" step="0.1" value={meta.taxRate} onChange={(e) => setMeta({ ...meta, taxRate: e.target.value })} style={{ width: 60, height: 32 }} />
+                  %
+                </span>
+              )}
+            </div>
+          </Field>
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", margin: "4px 0 8px" }}>
+        <span className="muted" style={{ fontSize: 12 }}>類別：</span>
+        <select className="wel-scan-input" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+          {categories.map((c) => <option key={c.id} value={c.id}>{c.name}{materialItems.filter((m) => m.categoryId === c.id).length ? "" : "（無品項）"}</option>)}
+        </select>
+        <span className="muted" style={{ fontSize: 12 }}>切換類別時，已勾選的品項都會保留，可以跨類別一起叫貨。</span>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table className="wel-table">
+          <thead><tr><th></th><th>品項</th><th className="right">數量</th><th>單位</th><th className="right">單價</th><th className="right">小計</th></tr></thead>
+          <tbody>
+            {items.length === 0 && <tr><td colSpan={6}><Empty text="這個類別還沒有品項，可到「品項類別」或叫貨頁的「管理品項清單」新增" /></td></tr>}
+            {items.map((m) => {
+              const r = rowOf(m);
+              return (
+                <tr key={m.id} style={r.include ? { background: "rgba(74,144,164,0.10)" } : undefined}>
+                  <td><input type="checkbox" checked={r.include} onChange={(e) => patch(m, { include: e.target.checked })} style={{ width: 16, height: 16 }} /></td>
+                  <td style={{ minWidth: 200 }}>{m.name}</td>
+                  <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 80 }} value={r.quantity} onChange={(e) => patch(m, { quantity: e.target.value, include: Number(e.target.value) > 0 })} /></td>
+                  <td><input className="wel-scan-input" style={{ width: 56 }} value={r.unit} onChange={(e) => patch(m, { unit: e.target.value })} /></td>
+                  <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 90 }} value={r.unitPrice} onChange={(e) => patch(m, { unitPrice: e.target.value })} /></td>
+                  <td className="right mono">{fmtMoney((Number(r.quantity) || 0) * (Number(r.unitPrice) || 0))}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {uncategorizedCount > 0 && <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>另有 {uncategorizedCount} 個未歸類品項沒有列在這裡，請到「品項類別」頁指定類別。</div>}
+
+      <div style={{ marginTop: 10, fontSize: 13 }}>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+          已選 {chosen.length} 項{chosen.length ? "：" : ""}
+          {chosen.map((m) => `${m.name}×${sel[m.id].quantity || 0}`).join("、")}
+        </div>
+        <div className="mono" style={{ fontSize: 13 }}>
+          合計：{fmtMoney(total)}{taxOn ? `　稅額（${Number(meta.taxRate) || 0}%）：${fmtMoney(taxTotal)}　含稅：${fmtMoney(total + taxTotal)}` : ""}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button type="button" className="wel-btn-primary" disabled={saving} onClick={confirm}>{saving ? "儲存中…" : `確認叫貨（${chosen.length} 筆）`}</button>
+        <button type="button" className="wel-btn-ghost" onClick={() => setSel({})}>清除全部勾選</button>
+      </div>
+    </div>
   );
 }
 
