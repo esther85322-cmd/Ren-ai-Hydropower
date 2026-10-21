@@ -1094,7 +1094,7 @@ export default function WaterElectricLedger() {
       const price = Number(r.unitPrice);
       return {
         id: uid(), date: meta.date, categoryId: r.categoryId || categories[0]?.id || "", itemName: r.name.trim(), supplier: meta.supplier || "",
-        quantity: qty, unit: r.unit || "", unitPrice: price, note: "收貨單掃描", hasInvoice: !!meta.hasInvoice, applyTax: false, taxRate: 5,
+        quantity: qty, unit: r.unit || "", unitPrice: price, note: "收貨單掃描", hasInvoice: !!meta.hasInvoice, applyTax: !!(meta.hasInvoice && meta.applyTax), taxRate: Number(meta.taxRate) || 0,
         siteId: currentSiteId, amount: qty * price,
       };
     });
@@ -2429,9 +2429,12 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                     <Plus size={13} /> 新增到「{catById[orderForm.categoryId]?.name || "此類別"}」
                   </button>
                 </div>
+                <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                  目前只顯示「{catById[orderForm.categoryId]?.name || "此類別"}」的品項（{categoryMaterials.length}）；要管理其他類別，請先在上方切換類別。
+                </div>
                 <div className="wel-manager-list">
-                  {sortedMaterials.length === 0 && <span className="muted" style={{ fontSize: 12 }}>尚未建立任何品項</span>}
-                  {sortedMaterials.map((m) => (
+                  {categoryMaterials.length === 0 && <span className="muted" style={{ fontSize: 12 }}>這個類別還沒有品項，可在上方新增</span>}
+                  {categoryMaterials.map((m) => (
                     <div key={m.id} className="wel-manager-row">
                       <input
                         className="wel-manager-name"
@@ -2449,6 +2452,9 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                     </div>
                   ))}
                 </div>
+                {uncategorizedMaterials.length > 0 && (
+                  <div className="muted" style={{ fontSize: 11 }}>另有 {uncategorizedMaterials.length} 個未歸類品項，請到「品項類別」頁指定類別後就會出現在對應類別裡。</div>
+                )}
                 <div className="muted" style={{ fontSize: 11 }}>提示：直接修改上面的名稱／單位／單價即可更新，改名稱會自動同步更新過去的叫貨紀錄；設定類別後，之後挑選這個品項會自動帶入該類別（不影響過去已新增的紀錄）。</div>
                 <button type="button" className="wel-btn-ghost" onClick={() => setManageOpen(false)}>收合品項管理</button>
               </div>
@@ -3905,7 +3911,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [meta, setMeta] = useState({ date: todayStr(), supplier: "", hasInvoice: true, saveToAlbum: true, addNewItems: true, categoryId: defaultCategoryId || categories[0]?.id || "" });
+  const [meta, setMeta] = useState({ date: todayStr(), supplier: "", hasInvoice: true, applyTax: false, taxRate: 5, saveToAlbum: true, addNewItems: true, categoryId: defaultCategoryId || categories[0]?.id || "" });
   const camRef = useRef(null);
   const galRef = useRef(null);
   const ocrRef = useRef(null);
@@ -3983,6 +3989,8 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
   };
 
   const total = rows.filter((r) => r.include).reduce((sum, r) => sum + (isOrder ? (Number(r.quantity) || 0) * (Number(r.unitPrice) || 0) : 0), 0);
+  const taxOn = isOrder && meta.hasInvoice && meta.applyTax;
+  const taxTotal = taxOn ? total * (Number(meta.taxRate) || 0) / 100 : 0;
   const catSelect = (value, onChange) => (
     <select className="wel-scan-input" value={value} onChange={onChange}>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
   );
@@ -4033,6 +4041,23 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
                   <option value="yes">有發票</option><option value="no">無發票</option>
                 </select>
               </Field>
+              {meta.hasInvoice && (
+                <Field label="營業稅" wide>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", height: 40 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+                      <input type="checkbox" checked={meta.applyTax} onChange={(e) => setMeta({ ...meta, applyTax: e.target.checked })} style={{ width: 16, height: 16 }} />
+                      計算稅額
+                    </label>
+                    {meta.applyTax && (
+                      <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+                        稅率
+                        <input type="number" min="0" step="0.1" value={meta.taxRate} onChange={(e) => setMeta({ ...meta, taxRate: e.target.value })} style={{ width: 60, height: 32 }} />
+                        %
+                      </span>
+                    )}
+                  </div>
+                </Field>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
@@ -4054,11 +4079,11 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
               <table className="wel-table">
                 <thead>
                   {isOrder
-                    ? <tr><th></th><th>品項</th><th>類別</th><th className="right">數量</th><th>單位</th><th className="right">單價</th><th className="right">小計</th><th></th></tr>
+                    ? <tr><th></th><th>品項</th><th>類別</th><th className="right">數量</th><th>單位</th><th className="right">單價</th><th className="right">小計</th>{taxOn && <th className="right">稅額</th>}<th></th></tr>
                     : <tr><th></th><th>品項名稱</th><th>類別</th><th>單位</th><th className="right">預設單價</th><th></th></tr>}
                 </thead>
                 <tbody>
-                  {rows.length === 0 && <tr><td colSpan={isOrder ? 8 : 6}><Empty text="沒有辨識到項目，請按下方「新增一列」手動輸入" /></td></tr>}
+                  {rows.length === 0 && <tr><td colSpan={isOrder ? (taxOn ? 9 : 8) : 6}><Empty text="沒有辨識到項目，請按下方「新增一列」手動輸入" /></td></tr>}
                   {rows.map((r, idx) => (
                     <tr key={r.id} style={isOrder && !r.matchedId ? { background: "rgba(232,163,61,0.08)" } : undefined}>
                       <td><input type="checkbox" checked={r.include} onChange={(e) => patchRow(r.id, { include: e.target.checked })} style={{ width: 16, height: 16 }} /></td>
@@ -4076,6 +4101,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
                           <td><input className="wel-scan-input" style={{ width: 56 }} value={r.unit} onChange={(e) => patchRow(r.id, { unit: e.target.value })} /></td>
                           <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 86 }} value={r.unitPrice} onChange={(e) => patchRow(r.id, { unitPrice: e.target.value })} /></td>
                           <td className="right mono">{fmtMoney((Number(r.quantity) || 0) * (Number(r.unitPrice) || 0))}</td>
+                          {taxOn && <td className="right mono muted">{fmtMoney((Number(r.quantity) || 0) * (Number(r.unitPrice) || 0) * (Number(meta.taxRate) || 0) / 100)}</td>}
                         </>
                       ) : (
                         <>
@@ -4090,7 +4116,11 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
               </table>
               <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
                 <button type="button" className="wel-btn-ghost" onClick={addRow}><Plus size={13} /> 新增一列</button>
-                {isOrder && <span className="muted mono" style={{ fontSize: 12 }}>已勾選合計：{fmtMoney(total)}</span>}
+                {isOrder && (
+                  <span className="muted mono" style={{ fontSize: 12 }}>
+                    已勾選合計：{fmtMoney(total)}{taxOn ? `　稅額（${Number(meta.taxRate) || 0}%）：${fmtMoney(taxTotal)}　含稅：${fmtMoney(total + taxTotal)}` : ""}
+                  </span>
+                )}
               </div>
               {rawText && (
                 <details style={{ marginTop: 8 }}>
