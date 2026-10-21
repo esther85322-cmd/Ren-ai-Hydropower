@@ -157,6 +157,7 @@ export default function CheckinPage() {
           startTime: form.start,
           endTime: form.end,
           overtimeHours: result.overtimeHours,
+          dailyRate: Number(selectedWorker?.dailyRate) || 0,
         };
         next = [rec, ...list];
       }

@@ -9,9 +9,9 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download
 } from "lucide-react";
-import { storageGet, storageSet, storageGetAll } from "./storage";
+import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -37,6 +37,37 @@ const fmtNum = (n) => {
   const v = Number(n) || 0;
   return Number.isInteger(v) ? v.toLocaleString("zh-TW") : v.toLocaleString("zh-TW", { maximumFractionDigits: 2 });
 };
+
+// ---- contract file helpers ----
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const fmtSize = (n) => (n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
+async function prepareUploadFile(file) {
+  if (!file.type.startsWith("image/") || file.size <= 600 * 1024) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.8));
+    return blob ? new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file;
+  } catch (e) {
+    return file;
+  }
+}
+const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+  reader.onerror = reject;
+  reader.readAsDataURL(blob);
+});
+function base64ToBlob(b64, type) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
 
 // ---- Excel / Word export helpers ----
 function triggerDownload(blob, filename) {
@@ -140,6 +171,8 @@ export default function WaterElectricLedger() {
   }, []);
   const returnToSites = useCallback(() => setView("sites"), []);
   const [contracts, setContracts] = useState([]);
+  const contractsRef = useRef(contracts);
+  contractsRef.current = contracts;
   const [payments, setPayments] = useState([]);
   const [floorItems, setFloorItems] = useState([]);
   const [clientPayments, setClientPayments] = useState([]);
@@ -621,7 +654,7 @@ export default function WaterElectricLedger() {
     [siteOtherExpenses]
   );
 
-  const projectGrandTotal = grandTotal + contractPaidTotal + otherExpensesTotal + fixedAssetsTotal + capitalTotal;
+  const projectGrandTotal = grandTotal + contractPaidTotal + otherExpensesTotal + fixedAssetsTotal;
   const profitLoss = clientPaidTotal - projectGrandTotal;
 
   const siteBreakdown = useMemo(() => {
@@ -656,7 +689,7 @@ export default function WaterElectricLedger() {
       map[f.siteId].asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1);
     });
     return Object.values(map)
-      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset + s.capital, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset + s.capital) }))
+      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset), balance: s.capital + s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
       .sort((a, b) => b.total - a.total);
   }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets]);
 
@@ -747,6 +780,12 @@ export default function WaterElectricLedger() {
     setUsages(next);
     persistUsages(next);
   };
+  const consumeFromInventory = ({ date, categoryId, itemName, quantity, unit, location }) => {
+    const rec = { id: uid(), date, categoryId, itemName, quantity, unit, location: location || "", type: "out", siteId: currentSiteId };
+    const next = [rec, ...usages];
+    setUsages(next);
+    persistUsages(next);
+  };
   const updateUsage = (id, patch) => {
     const next = usages.map((u) => (u.id === id ? { ...u, ...patch } : u));
     setUsages(next);
@@ -781,11 +820,11 @@ export default function WaterElectricLedger() {
   };
 
   // ---- 品項清單 (managed material catalog, used by the wheel-style picker in 叫貨；名稱與單價可隨時調整，改名會連動更新過去紀錄) ----
-  const addMaterialItem = (name, unit, defaultPrice) => {
+  const addMaterialItem = (name, unit, defaultPrice, categoryId) => {
     const nm = (name || "").trim();
     if (!nm) { showToast("請輸入品項名稱"); return; }
     if (materialItems.some((m) => m.name === nm)) { showToast("此品項已存在"); return; }
-    const next = [...materialItems, { id: uid(), name: nm, unit: (unit || "").trim(), defaultPrice: defaultPrice === "" || defaultPrice == null ? "" : Number(defaultPrice) }];
+    const next = [...materialItems, { id: uid(), name: nm, unit: (unit || "").trim(), defaultPrice: defaultPrice === "" || defaultPrice == null ? "" : Number(defaultPrice), categoryId: categoryId || "" }];
     setMaterialItems(next);
     persistMaterialItems(next);
   };
@@ -927,9 +966,53 @@ export default function WaterElectricLedger() {
       showToast("此發包項目已有項目明細，請先清除項目明細再刪除");
       return;
     }
+    (contracts.find((c) => c.id === id)?.files || []).forEach((f) => fileRemove(f.id, f.chunks));
     const next = contracts.filter((c) => c.id !== id);
     setContracts(next);
     persistContracts(next);
+  };
+
+  // ---- 發包合約檔案 (files are chunked into separate Firestore docs; only metadata lives on the contract) ----
+  const addContractFile = async (contractId, file) => {
+    try {
+      const prepared = await prepareUploadFile(file);
+      if (prepared.size > MAX_UPLOAD_BYTES) { showToast("檔案超過 5 MB，請壓縮後再上傳（照片會自動縮小，PDF 請先壓縮）"); return false; }
+      const b64 = await blobToBase64(prepared);
+      const fileId = uid() + uid();
+      const chunks = await fileStore(fileId, b64);
+      if (!chunks) { showToast("上傳失敗，請檢查網路後再試一次"); return false; }
+      const meta = { id: fileId, name: prepared.name, size: prepared.size, type: prepared.type || "application/octet-stream", chunks, uploadedAt: todayStr() };
+      const next = contractsRef.current.map((c) => (c.id === contractId ? { ...c, files: [...(c.files || []), meta] } : c));
+      setContracts(next);
+      persistContracts(next);
+      showToast(`已上傳：${prepared.name}`);
+      return true;
+    } catch (e) {
+      console.error("upload contract file failed", e);
+      showToast("上傳失敗，請檢查網路後再試一次");
+      return false;
+    }
+  };
+  const deleteContractFile = (contractId, file) => {
+    if (!window.confirm(`確定要刪除合約檔案「${file.name}」嗎？刪除後無法復原。`)) return;
+    const next = contractsRef.current.map((c) => (c.id === contractId ? { ...c, files: (c.files || []).filter((f) => f.id !== file.id) } : c));
+    setContracts(next);
+    persistContracts(next);
+    fileRemove(file.id, file.chunks);
+  };
+  const openContractFile = async (file) => {
+    try {
+      showToast("讀取檔案中…");
+      const blob = base64ToBlob(await fileLoad(file.id, file.chunks), file.type);
+      const viewable = file.type === "application/pdf" || file.type.startsWith("image/");
+      const url = URL.createObjectURL(blob);
+      const win = viewable ? window.open(url, "_blank") : null;
+      if (!win) triggerDownload(blob, file.name);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      console.error("open contract file failed", e);
+      showToast("讀取檔案失敗，請稍後再試一次");
+    }
   };
 
   const submitPayment = (e) => {
@@ -1379,7 +1462,7 @@ export default function WaterElectricLedger() {
       const newId = uid();
       idMap[c.id] = newId;
       return {
-        ...c, id: newId, siteId: targetSiteId, date: todayStr(),
+        ...c, id: newId, siteId: targetSiteId, date: todayStr(), files: [],
         templateItems: (c.templateItems || []).map((t) => ({ ...t, id: uid() })),
       };
     });
@@ -1601,7 +1684,22 @@ export default function WaterElectricLedger() {
               setCurrentSiteId={setCurrentSiteId}
             />
           )}
-          {tab === "inventory" && <InventoryTab inventory={inventory} catById={catById} />}
+          {tab === "inventory" && (
+            <InventoryTab
+              inventory={inventory}
+              catById={catById}
+              categories={categories}
+              orders={siteOrders}
+              usages={siteUsages}
+              siteById={siteById}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
+              consumeFromInventory={consumeFromInventory}
+              deleteUsage={deleteUsage}
+              showToast={showToast}
+            />
+          )}
           {tab === "labor" && (
             <LaborTab
               workers={workers}
@@ -1652,6 +1750,9 @@ export default function WaterElectricLedger() {
           )}
           {tab === "contracts" && (
             <ContractsTab
+              addContractFile={addContractFile}
+              deleteContractFile={deleteContractFile}
+              openContractFile={openContractFile}
               contractRows={contractRows}
               payments={sitePayments}
               siteById={siteById}
@@ -2082,6 +2183,19 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   const sortedMaterials = useMemo(() => materialItems.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [materialItems]);
   const sortedSuppliers = useMemo(() => suppliers.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [suppliers]);
 
+  const categoryMaterials = sortedMaterials.filter((m) => m.categoryId === orderForm.categoryId);
+  const uncategorizedMaterials = sortedMaterials.filter((m) => !m.categoryId || !catById[m.categoryId]);
+  const pickableMaterials = [...categoryMaterials, ...uncategorizedMaterials];
+  const renderMaterialOption = (m) => (
+    <option key={m.id} value={m.name}>
+      {m.name}{m.unit ? `（${m.unit}）` : ""}{m.defaultPrice !== "" && m.defaultPrice != null ? ` · ${fmtMoney(m.defaultPrice)}` : ""}
+    </option>
+  );
+  const handlePickCategory = (e) => {
+    const categoryId = e.target.value;
+    const stillValid = materialItems.some((m) => m.name === orderForm.itemName && (m.categoryId === categoryId || !m.categoryId || !catById[m.categoryId]));
+    setOrderForm({ ...orderForm, categoryId, ...(stillValid ? {} : { itemName: "" }) });
+  };
   const handlePick = (e) => {
     const val = e.target.value;
     if (val === "__manage__") { setManageOpen(true); return; }
@@ -2130,19 +2244,18 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
           <Field label="日期">
             <input type="date" value={orderForm.date} onChange={(e) => setOrderForm({ ...orderForm, date: e.target.value })} />
           </Field>
-          <Field label="類別">
-            <select value={orderForm.categoryId} onChange={(e) => setOrderForm({ ...orderForm, categoryId: e.target.value })}>
+          <Field label="類別（先選類別，品項會依類別列出）">
+            <select value={orderForm.categoryId} onChange={handlePickCategory}>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </Field>
           <Field label="品項名稱" wide>
-            <select value={sortedMaterials.some((m) => m.name === orderForm.itemName) ? orderForm.itemName : ""} onChange={handlePick}>
-              <option value="" disabled>{sortedMaterials.length ? "請選擇品項…" : "尚無品項，請先新增"}</option>
-              {sortedMaterials.map((m) => (
-                <option key={m.id} value={m.name}>
-                  {m.name}{m.unit ? `（${m.unit}）` : ""}{m.defaultPrice !== "" && m.defaultPrice != null ? ` · ${fmtMoney(m.defaultPrice)}` : ""}
-                </option>
-              ))}
+            <select value={pickableMaterials.some((m) => m.name === orderForm.itemName) ? orderForm.itemName : ""} onChange={handlePick}>
+              <option value="" disabled>{pickableMaterials.length ? "請選擇品項…" : "此類別尚無品項，請先新增"}</option>
+              {categoryMaterials.map(renderMaterialOption)}
+              {uncategorizedMaterials.length > 0 && (
+                <optgroup label="未歸類品項">{uncategorizedMaterials.map(renderMaterialOption)}</optgroup>
+              )}
               <option value="__manage__">＋ 管理品項清單…</option>
             </select>
             {orderForm.itemName && !manageOpen && (
@@ -2156,9 +2269,9 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                   <input type="number" placeholder="預設單價" value={newMaterial.defaultPrice} onChange={(e) => setNewMaterial({ ...newMaterial, defaultPrice: e.target.value })} style={{ width: 90 }} />
                   <button
                     type="button" className="wel-btn-ghost"
-                    onClick={() => { addMaterialItem(newMaterial.name, newMaterial.unit, newMaterial.defaultPrice); setNewMaterial({ name: "", unit: "", defaultPrice: "" }); }}
+                    onClick={() => { addMaterialItem(newMaterial.name, newMaterial.unit, newMaterial.defaultPrice, orderForm.categoryId); setNewMaterial({ name: "", unit: "", defaultPrice: "" }); }}
                   >
-                    <Plus size={13} /> 新增
+                    <Plus size={13} /> 新增到「{catById[orderForm.categoryId]?.name || "此類別"}」
                   </button>
                 </div>
                 <div className="wel-manager-list">
@@ -2569,7 +2682,35 @@ function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageF
   );
 }
 
-function InventoryTab({ inventory, catById }) {
+function InventoryTab({ inventory, catById, categories, orders, usages, siteById, isAllSites, sites, setCurrentSiteId, consumeFromInventory, deleteUsage, showToast }) {
+  const [form, setForm] = useState({ date: todayStr(), categoryId: categories[0]?.id || "", itemKey: "", quantity: "", location: "" });
+  const [filterCat, setFilterCat] = useState("all");
+  const [openMonths, setOpenMonths] = useState({});
+
+  const itemsInFormCategory = useMemo(() => inventory.filter((i) => i.categoryId === form.categoryId), [inventory, form.categoryId]);
+  const selectedItem = inventory.find((i) => i.key === form.itemKey);
+  const visibleInventory = filterCat === "all" ? inventory : inventory.filter((i) => i.categoryId === filterCat);
+
+  const pickRow = (i) => setForm((f) => ({ ...f, categoryId: i.categoryId, itemKey: i.key }));
+  const submitConsume = () => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能消貨"); return; }
+    if (!selectedItem) { showToast("請先選擇「種類」與「品項」"); return; }
+    const qty = Number(form.quantity);
+    if (!qty || qty <= 0) { showToast("請填寫要消貨的「數量」"); return; }
+    if (qty > selectedItem.remaining) { showToast(`庫存不足：「${selectedItem.itemName}」剩餘 ${fmtNum(selectedItem.remaining)} ${selectedItem.unit || ""}`); return; }
+    consumeFromInventory({ date: form.date, categoryId: selectedItem.categoryId, itemName: selectedItem.itemName, quantity: qty, unit: selectedItem.unit || "", location: form.location });
+    setForm((f) => ({ ...f, itemKey: f.itemKey, quantity: "", location: "" }));
+    showToast(`已消貨：${selectedItem.itemName} ${fmtNum(qty)} ${selectedItem.unit || ""}`);
+  };
+
+  const movements = useMemo(() => {
+    const list = [];
+    orders.forEach((o) => list.push({ id: "o" + o.id, date: o.date, kind: "in", categoryId: o.categoryId, itemName: o.itemName, quantity: Number(o.quantity) || 0, unit: o.unit || "", note: o.supplier || "", siteId: o.siteId }));
+    usages.forEach((u) => list.push({ id: "u" + u.id, usageId: u.id, date: u.date, kind: u.type === "return" ? "return" : "out", categoryId: u.categoryId, itemName: u.itemName, quantity: Number(u.quantity) || 0, unit: u.unit || "", note: u.location || "", siteId: u.siteId }));
+    return list;
+  }, [orders, usages]);
+  const kindLabel = { in: "進貨", out: "消貨", return: "退回" };
+
   return (
     <div className="wel-page">
       <div className="wel-page-head">
@@ -2578,15 +2719,57 @@ function InventoryTab({ inventory, catById }) {
           <h1 className="wel-h1">剩餘庫存現況</h1>
         </div>
       </div>
+
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="消貨" />}
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><Boxes size={14} /> 消貨（從庫存領出使用）</div>
+        <div className="wel-form-grid">
+          <Field label="日期">
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+          </Field>
+          <Field label="種類">
+            <select value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value, itemKey: "" })}>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="品項（依種類列出）">
+            <select value={form.itemKey} onChange={(e) => setForm({ ...form, itemKey: e.target.value })}>
+              <option value="" disabled>{itemsInFormCategory.length ? "請選擇品項…" : "此種類目前沒有庫存品項"}</option>
+              {itemsInFormCategory.map((i) => (
+                <option key={i.key} value={i.key}>{i.itemName}（剩餘 {fmtNum(i.remaining)} {i.unit || ""}）</option>
+              ))}
+            </select>
+          </Field>
+          <Field label={"消貨數量" + (selectedItem ? `（${selectedItem.unit || "單位"}）` : "")}>
+            <input type="number" step="any" min="0" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
+          </Field>
+          <Field label="用途 / 備註" wide>
+            <input placeholder="選填，例：3樓衛浴配管" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+          </Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submitConsume}><Plus size={15} /> 消貨</button>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>消貨會自動新增一筆「領料使用」紀錄並扣減剩餘庫存；用不完的可到「領料使用」新增「退回」加回庫存。</div>
+      </div>
+
+      <div className="wel-card-title-row" style={{ marginTop: 14 }}>
+        <div className="wel-card-title"><Boxes size={14} /> 庫存明細（點一列可帶入上方消貨表單）</div>
+        <div className="wel-filter">
+          <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)}>
+            <option value="all">全部種類</option>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+      </div>
       <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
         <table className="wel-table">
           <thead>
             <tr><th>類別</th><th>品項</th><th className="right">已叫貨</th><th className="right">已使用</th><th className="right">剩餘庫存</th><th className="right">平均單價</th><th className="right">庫存價值</th></tr>
           </thead>
           <tbody>
-            {inventory.length === 0 && (<tr><td colSpan={7}><Empty text="尚無庫存資料，請先新增叫貨紀錄" /></td></tr>)}
-            {inventory.map((i) => (
-              <tr key={i.key}>
+            {visibleInventory.length === 0 && (<tr><td colSpan={7}><Empty text="尚無庫存資料，請先新增叫貨紀錄" /></td></tr>)}
+            {visibleInventory.map((i) => (
+              <tr key={i.key} className="wel-row-clickable" onClick={() => pickRow(i)}>
                 <td><span className="wel-tag" style={{ borderColor: catById[i.categoryId]?.color }}>{catById[i.categoryId]?.name || "未分類"}</span></td>
                 <td>{i.itemName}</td>
                 <td className="right mono">{fmtNum(i.ordered)} {i.unit}</td>
@@ -2598,6 +2781,48 @@ function InventoryTab({ inventory, catById }) {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="wel-card" style={{ marginTop: 14 }}>
+        <div className="wel-card-title"><CalendarRange size={14} /> 庫存異動紀錄（進貨／消貨／退回，依年月點開查詢）</div>
+        {movements.length === 0 && <Empty text="尚無庫存異動紀錄" />}
+        {attendanceByMonth(movements).map((mg) => {
+          const mOpen = !!openMonths[mg.month];
+          const inCount = mg.items.filter((m) => m.kind === "in").length;
+          const outCount = mg.items.filter((m) => m.kind === "out").length;
+          const retCount = mg.items.filter((m) => m.kind === "return").length;
+          return (
+            <div key={mg.month} className="wel-item-floor-group">
+              <button type="button" className="wel-item-group-label wel-item-group-toggle" onClick={() => setOpenMonths((prev) => ({ ...prev, [mg.month]: !prev[mg.month] }))}>
+                {mOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                {mg.month} · 進貨 {inCount} 筆 · 消貨 {outCount} 筆{retCount ? ` · 退回 ${retCount} 筆` : ""}
+              </button>
+              {mOpen && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="wel-table">
+                    <thead>
+                      <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>類型</th><th>類別</th><th>品項</th><th className="right">數量</th><th>廠商 / 用途</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                      {mg.items.map((m) => (
+                        <tr key={m.id}>
+                          {isAllSites && <td className="muted">{siteById[m.siteId]?.name || "—"}</td>}
+                          <td className="mono">{m.date}</td>
+                          <td>{m.kind === "out" ? <span className="wel-chip">{kindLabel[m.kind]}</span> : <span className="wel-chip-info">{kindLabel[m.kind]}</span>}</td>
+                          <td><span className="wel-tag" style={{ borderColor: catById[m.categoryId]?.color }}>{catById[m.categoryId]?.name || "未分類"}</span></td>
+                          <td>{m.itemName}</td>
+                          <td className="right mono" style={m.kind === "out" ? undefined : { color: "var(--green)" }}>{m.kind === "out" ? "−" : "+"}{fmtNum(m.quantity)} {m.unit}</td>
+                          <td className="muted">{m.note || "—"}</td>
+                          <td>{m.usageId && <button className="wel-icon-btn" onClick={() => deleteUsage(m.usageId)}><Trash2 size={13} /></button>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -3027,6 +3252,7 @@ function LaborTab({
 }
 
 function ContractsTab({
+  addContractFile, deleteContractFile, openContractFile,
   contractRows, payments, siteById, contractForm, setContractForm, submitContract, deleteContract,
   paymentForm, setPaymentForm, submitPayment, deletePayment, updatePayment, contractPaidTotal, contractTotalPrice, isAllSites,
   floorItems, addTemplateRow, updateTemplateRow, removeTemplateRow, applyTemplateToFloors,
@@ -3173,6 +3399,7 @@ function ContractsTab({
                     出工紀錄：<span className="mono">{c.attendanceDays}</span> 天 · 工天人次 <span className="mono">{c.attendanceManDays}</span>
                   </div>
                 )}
+                <ContractFiles contract={c} addContractFile={addContractFile} deleteContractFile={deleteContractFile} openContractFile={openContractFile} />
                 {isOpen && (
                   <FloorItemsPanel
                     contract={c}
@@ -3292,6 +3519,40 @@ function ContractsTab({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function ContractFiles({ contract, addContractFile, deleteContractFile, openContractFile }) {
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+  const files = contract.files || [];
+  const onPick = async (e) => {
+    const list = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!list.length) return;
+    setBusy(true);
+    for (const f of list) await addContractFile(contract.id, f);
+    setBusy(false);
+  };
+  return (
+    <div className="wel-floor-summary-line" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Paperclip size={12} /> 合約檔案（{files.length}）</span>
+        <input ref={inputRef} type="file" accept="application/pdf,image/*,.doc,.docx" multiple style={{ display: "none" }} onChange={onPick} />
+        <button type="button" className="wel-btn-ghost" disabled={busy} onClick={() => inputRef.current && inputRef.current.click()}>
+          {busy ? "上傳中…" : <><Upload size={12} /> 上傳合約</>}
+        </button>
+      </div>
+      {files.map((f) => (
+        <div key={f.id} className="wel-attendance-item">
+          <button type="button" className="wel-btn-ghost" style={{ padding: "2px 8px" }} onClick={() => openContractFile(f)}><Download size={12} /> 開啟</button>
+          <span style={{ flex: 1, wordBreak: "break-all" }}>{f.name}</span>
+          <span className="mono muted">{fmtSize(f.size)}</span>
+          <span className="mono muted">{f.uploadedAt}</span>
+          <button className="wel-icon-btn" onClick={() => deleteContractFile(contract.id, f)}><Trash2 size={13} /></button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -4791,7 +5052,7 @@ function CapitalTab({
       <div className="wel-meter-card">
         <div className="wel-meter-label"><PiggyBank size={14} /> 累計投入成本</div>
         <div className="wel-meter-sub" style={{ marginTop: 0 }}>
-          <span>會計入這個案場的總支出／毛利計算</span>
+          <span>你投入的資金，不重複計入總支出（花出去的錢已在材料／人工／發包等項目算過）；資金結餘 ＝ 投入成本 ＋ 甲方收款 － 總支出</span>
         </div>
         <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--teal)" }}>{fmtMoney(capitalTotal)}</div>
       </div>
@@ -5372,6 +5633,10 @@ function SiteLandingPage({
     [siteBreakdown]
   );
   const allSitesProfit = allSitesIncome - allSitesTotal;
+  const allSitesBalance = useMemo(
+    () => siteBreakdown.reduce((s, b) => s + b.balance, 0),
+    [siteBreakdown]
+  );
 
   const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setEditDraft({ name: s.name, address: s.address || "" }); };
   const saveEdit = (e) => { e.stopPropagation(); renameSite(editingId, editDraft.name.trim() || "未命名案場", editDraft.address.trim()); setEditingId(null); };
@@ -5414,12 +5679,13 @@ function SiteLandingPage({
               <div><span>合計收入</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesIncome)}</b></div>
               <div><span>合計總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(allSitesTotal)}</b></div>
               <div><span>{allSitesProfit >= 0 ? "合計毛利" : "合計虧損"}</span><b style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</b></div>
+              <div><span>合計資金結餘</span><b style={{ color: allSitesBalance >= 0 ? "var(--green)" : "var(--red)" }}>{fmtMoney(allSitesBalance)}</b></div>
             </div>
           </div>
         )}
 
         {sites.map((s) => {
-          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0, other: 0, asset: 0 };
+          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0, other: 0, asset: 0, balance: 0 };
           const isEditing = editingId === s.id;
           return (
             <div
@@ -5457,6 +5723,7 @@ function SiteLandingPage({
                   </div>
                   <div className="wel-site-stats">
                     <div><span>投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(stat.capital)}</b></div>
+                    <div><span>資金結餘</span><b style={{ color: stat.balance >= 0 ? "var(--green)" : "var(--red)" }}>{fmtMoney(stat.balance)}</b></div>
                     <div><span>其他支出</span><b>{fmtMoney(stat.other)}</b></div>
                     <div><span>固定資產</span><b>{fmtMoney(stat.asset)}</b></div>
                   </div>

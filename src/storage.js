@@ -28,14 +28,56 @@ async function authHeader() {
 // write that overwrites real data with empty defaults. (This is exactly what
 // happened once during development: a flaky read was mistaken for an empty
 // database and wiped the "workers"/"worklogs"/"sites" documents.)
+// Uploaded files (e.g. subcontract contracts) are stored as base64 chunks in
+// documents named "zfile-<fileId>-<n>" inside the same collection (the security
+// rules only open wel-data/*). Those docs are large, so the initial load must
+// never download them: the "zfile-" prefix sorts after every normal key, which
+// lets a single __name__ range query fetch only the regular data documents.
+const FILE_PREFIX = "zfile-";
+const FILE_CHUNK_CHARS = 600000;
+
+async function fetchRegularDocuments(headers) {
+  const parent = FIRESTORE_BASE.replace("https://firestore.googleapis.com/v1/", "");
+  const res = await fetch(`${FIRESTORE_BASE}:runQuery`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: COLLECTION }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: "__name__" },
+            op: "LESS_THAN",
+            value: { referenceValue: `${parent}/${COLLECTION}/${FILE_PREFIX}` },
+          },
+        },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`query failed: ${res.status}`);
+  const rows = await res.json();
+  return rows.filter((r) => r.document).map((r) => r.document);
+}
+
+async function fetchAllDocumentsFallback(headers) {
+  const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}?pageSize=300`, { headers });
+  if (!res.ok) throw new Error(`list failed: ${res.status}`);
+  const data = await res.json();
+  return (data.documents || []).filter((d) => !d.name.split("/").pop().startsWith(FILE_PREFIX));
+}
+
 export async function storageGetAll() {
   const byKey = {};
   try {
     const headers = await authHeader();
-    const res = await fetch(`${FIRESTORE_BASE}/${COLLECTION}?pageSize=300`, { headers });
-    if (!res.ok) throw new Error(`list failed: ${res.status}`);
-    const data = await res.json();
-    for (const d of data.documents || []) {
+    let documents;
+    try {
+      documents = await fetchRegularDocuments(headers);
+    } catch (e) {
+      console.warn("range query failed, falling back to full list", e);
+      documents = await fetchAllDocumentsFallback(headers);
+    }
+    for (const d of documents) {
       const key = d.name.split("/").pop();
       const raw = d.fields?.value?.stringValue;
       if (raw === undefined) continue;
@@ -99,5 +141,46 @@ export async function storageSet(key, value) {
   } catch (e) {
     console.error("storage set failed", key, e);
     return false;
+  }
+}
+
+// ---- file storage (chunked base64 inside Firestore; no Firebase Storage needed) ----
+export async function fileStore(fileId, base64) {
+  const total = Math.ceil(base64.length / FILE_CHUNK_CHARS);
+  let next = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && next < total) {
+      const i = next++;
+      const ok = await storageSet(`${FILE_PREFIX}${fileId}-${i}`, base64.slice(i * FILE_CHUNK_CHARS, (i + 1) * FILE_CHUNK_CHARS));
+      if (!ok) failed = true;
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  if (failed) {
+    await fileRemove(fileId, total);
+    return 0;
+  }
+  return total;
+}
+
+export async function fileLoad(fileId, chunks) {
+  let out = "";
+  for (let i = 0; i < chunks; i++) {
+    const part = await storageGetOrThrow(`${FILE_PREFIX}${fileId}-${i}`);
+    if (typeof part !== "string") throw new Error("file chunk missing");
+    out += part;
+  }
+  return out;
+}
+
+export async function fileRemove(fileId, chunks) {
+  try {
+    const headers = await authHeader();
+    for (let i = 0; i < chunks; i++) {
+      await fetch(`${FIRESTORE_BASE}/${COLLECTION}/${FILE_PREFIX}${fileId}-${i}`, { method: "DELETE", headers });
+    }
+  } catch (e) {
+    console.error("file remove failed", fileId, e);
   }
 }
