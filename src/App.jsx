@@ -9,7 +9,7 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus, ChevronUp, Workflow
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
 import { parseReceiptText, parseItemListText } from "./receiptParse";
@@ -103,7 +103,7 @@ function exportExcel(filename, sheets) {
 function buildWordHtml(docTitle, sections) {
   const esc = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const sectionsHtml = sections.map((sec) => {
-    const rowsHtml = (sec.rows || []).map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
+    const rowsHtml = (sec.rows || []).map((r) => `<tr>${r.map((c) => `<td>${esc(c).replace(/\r?\n/g, "<br>")}</td>`).join("")}</tr>`).join("");
     const headHtml = sec.headers ? `<tr>${sec.headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>` : "";
     const table = sec.headers || (sec.rows && sec.rows.length)
       ? `<table>${headHtml}${rowsHtml || `<tr><td colspan="${(sec.headers || []).length || 1}">（無資料）</td></tr>`}</table>`
@@ -183,6 +183,7 @@ export default function WaterElectricLedger() {
   const [contractItems, setContractItems] = useState([]);
   const [discussionItems, setDiscussionItems] = useState([]);
   const [notebookItems, setNotebookItems] = useState([]);
+  const [workflow, setWorkflow] = useState([]);
   const [receipts, setReceipts] = useState([]);
   const receiptsRef = useRef(receipts);
   receiptsRef.current = receipts;
@@ -210,6 +211,7 @@ export default function WaterElectricLedger() {
       const di = data.discussionitems ?? [];
       const nb = data.notebookitems ?? [];
       const rc = data.receipts ?? [];
+      const wf = data.workflow ?? [];
       const ci = data.contractitems ?? [];
       const mi = data.materialitems ?? [];
       const sup = data.suppliers ?? [];
@@ -247,6 +249,7 @@ export default function WaterElectricLedger() {
       setDiscussionItems(di);
       setNotebookItems(nb);
       setReceipts(rc);
+      setWorkflow(wf);
       setContractItems(ci);
       setMaterialItems(mi);
       setSuppliers(sup);
@@ -346,6 +349,15 @@ export default function WaterElectricLedger() {
     await storageSet("discussionitems", list);
     setSaving(false);
   }, []);
+  const persistWorkflow = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("workflow", list);
+    setSaving(false);
+  }, []);
+  const saveWorkflow = (next) => {
+    setWorkflow(next);
+    persistWorkflow(next);
+  };
   const persistReceipts = useCallback(async (list) => {
     setSaving(true);
     await storageSet("receipts", list);
@@ -963,6 +975,19 @@ export default function WaterElectricLedger() {
     setContracts(next);
     persistContracts(next);
     setContractForm(emptyContract);
+  };
+  const updateContract = (id, patch) => {
+    const next = contracts.map((c) => (c.id === id ? { ...c, ...patch } : c));
+    setContracts(next);
+    persistContracts(next);
+  };
+  const renameVendor = (oldName, newName) => {
+    const nm = (newName || "").trim();
+    if (!nm || nm === oldName) return;
+    const next = contracts.map((c) => (((c.contractor || "").trim() || "未指定廠商") === oldName ? { ...c, contractor: nm } : c));
+    setContracts(next);
+    persistContracts(next);
+    showToast(`已將廠商「${oldName}」改名為「${nm}」，底下的發包項目都已一併更新`);
   };
   const deleteContract = (id) => {
     if (payments.some((p) => p.contractId === id)) {
@@ -1691,6 +1716,7 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<ListOrdered size={16} />} label="項目總表" active={tab === "summary"} onClick={() => setTab("summary")} />
             <NavBtn icon={<MessageSquare size={16} />} label="備註討論" active={tab === "discussion"} onClick={() => setTab("discussion")} />
             <NavBtn icon={<NotebookPen size={16} />} label="大項記事本" active={tab === "notebook"} onClick={() => setTab("notebook")} />
+            <NavBtn icon={<Workflow size={16} />} label="施工流程" active={tab === "workflow"} onClick={() => setTab("workflow")} />
             <NavBtn icon={<Wallet size={16} />} label="甲方收款" active={tab === "client"} onClick={() => setTab("client")} />
             <NavBtn icon={<PiggyBank size={16} />} label="投入成本" active={tab === "capital"} onClick={() => setTab("capital")} />
             <NavBtn icon={<Hammer size={16} />} label="固定資產" active={tab === "assets"} onClick={() => setTab("assets")} />
@@ -1861,6 +1887,8 @@ export default function WaterElectricLedger() {
           )}
           {tab === "contracts" && (
             <ContractsTab
+              updateContract={updateContract}
+              renameVendor={renameVendor}
               addContractFile={addContractFile}
               deleteContractFile={deleteContractFile}
               openContractFile={openContractFile}
@@ -1980,6 +2008,7 @@ export default function WaterElectricLedger() {
               showToast={showToast}
             />
           )}
+          {tab === "workflow" && <WorkflowTab workflow={workflow} saveWorkflow={saveWorkflow} showToast={showToast} />}
           {tab === "notebook" && (
             <NotebookTab
               notebookItems={siteNotebookItems}
@@ -3378,6 +3407,7 @@ function LaborTab({
 }
 
 function ContractsTab({
+  updateContract, renameVendor,
   addContractFile, deleteContractFile, openContractFile,
   contractRows, payments, siteById, contractForm, setContractForm, submitContract, deleteContract,
   paymentForm, setPaymentForm, submitPayment, deletePayment, updatePayment, contractPaidTotal, contractTotalPrice, isAllSites,
@@ -3387,6 +3417,26 @@ function ContractsTab({
   contractItems, addContractItem, addContractItemsBatch, addPaymentFromItem, updateContractItem, deleteContractItem, deleteContractItemsByFloor, deleteContractItemsByName,
 }) {
   const [expandedId, setExpandedId] = useState(null);
+  const [editingContractId, setEditingContractId] = useState(null);
+  const [contractDraft, setContractDraft] = useState(null);
+  const [editingVendor, setEditingVendor] = useState(null);
+  const [vendorDraft, setVendorDraft] = useState("");
+  const startEditContract = (c) => {
+    setEditingContractId(c.id);
+    setContractDraft({ contractor: c.contractor || "", name: c.name || "", date: c.date || "", totalPrice: c.totalPrice ?? "", note: c.note || "" });
+  };
+  const cancelEditContract = () => { setEditingContractId(null); setContractDraft(null); };
+  const saveEditContract = (id) => {
+    if (!contractDraft.name.trim()) { showToast("請填寫「工程總稱」後再儲存"); return; }
+    updateContract(id, {
+      contractor: contractDraft.contractor.trim(),
+      name: contractDraft.name.trim(),
+      date: contractDraft.date,
+      totalPrice: contractDraft.totalPrice === "" ? "" : Number(contractDraft.totalPrice) || 0,
+      note: contractDraft.note.trim(),
+    });
+    cancelEditContract();
+  };
   const [expandedPaymentId, setExpandedPaymentId] = useState(null);
   const [paymentDraft, setPaymentDraft] = useState(null);
   const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, contractId: p.contractId, amount: p.amount, note: p.note || "" }); };
@@ -3486,9 +3536,24 @@ function ContractsTab({
           <div key={vg.vendor} className="wel-vendor-group">
             <div className="wel-vendor-head">
               <Building2 size={14} color="var(--teal)" />
-              <span className="wel-vendor-name">{vg.vendor}</span>
-              <span className="muted mono" style={{ fontSize: 11 }}>{vg.contracts.length} 個項目</span>
-              <span className="wel-contract-amt">{fmtMoney(vg.paid)} / {fmtMoney(vg.totalPrice)}</span>
+              {editingVendor === vg.vendor ? (
+                <>
+                  <input
+                    autoFocus className="wel-scan-input" style={{ flex: 1 }} value={vendorDraft} placeholder="廠商 / 工班名稱"
+                    onChange={(e) => setVendorDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { renameVendor(vg.vendor, vendorDraft); setEditingVendor(null); } if (e.key === "Escape") setEditingVendor(null); }}
+                  />
+                  <button type="button" className="wel-btn-primary" style={{ padding: "5px 12px", fontSize: 12 }} onClick={() => { renameVendor(vg.vendor, vendorDraft); setEditingVendor(null); }}>儲存</button>
+                  <button type="button" className="wel-btn-ghost" onClick={() => setEditingVendor(null)}>取消</button>
+                </>
+              ) : (
+                <>
+                  <span className="wel-vendor-name">{vg.vendor}</span>
+                  <button className="wel-icon-btn" title="修改廠商名稱（底下所有發包項目一併更新）" onClick={() => { setEditingVendor(vg.vendor); setVendorDraft(vg.vendor === "未指定廠商" ? "" : vg.vendor); }}><Pencil size={13} /></button>
+                  <span className="muted mono" style={{ fontSize: 11 }}>{vg.contracts.length} 個項目</span>
+                  <span className="wel-contract-amt">{fmtMoney(vg.paid)} / {fmtMoney(vg.totalPrice)}</span>
+                </>
+              )}
             </div>
             <div className="wel-pipes">
               {vg.contracts.map((c) => {
@@ -3504,8 +3569,27 @@ function ContractsTab({
                   <span className="wel-contract-name">{c.name}</span>
                   {c.contractor && <span className="muted mono" style={{ fontSize: 11.5 }}>{c.contractor}</span>}
                   <span className="wel-contract-amt">{fmtMoney(c.paid)} / {fmtMoney(c.totalPrice)}</span>
+                  <button className="wel-icon-btn" title="修改廠商／發包資料" onClick={() => (editingContractId === c.id ? cancelEditContract() : startEditContract(c))}><Pencil size={14} /></button>
                   <button className="wel-icon-btn" onClick={() => deleteContract(c.id)}><Trash2 size={14} /></button>
                 </div>
+                {editingContractId === c.id && contractDraft && (
+                  <div className="wel-timeline-wrap">
+                    <div className="wel-form-grid">
+                      <Field label="廠商 / 工班"><input value={contractDraft.contractor} onChange={(e) => setContractDraft({ ...contractDraft, contractor: e.target.value })} /></Field>
+                      <Field label="工程總稱"><input value={contractDraft.name} onChange={(e) => setContractDraft({ ...contractDraft, name: e.target.value })} /></Field>
+                      <Field label="發包日期"><input type="date" value={contractDraft.date} onChange={(e) => setContractDraft({ ...contractDraft, date: e.target.value })} /></Field>
+                      <Field label="發包總價"><input type="number" min="0" step="any" value={contractDraft.totalPrice} onChange={(e) => setContractDraft({ ...contractDraft, totalPrice: e.target.value })} /></Field>
+                      <Field label="備註" wide><textarea rows={3} value={contractDraft.note} onChange={(e) => setContractDraft({ ...contractDraft, note: e.target.value })} /></Field>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button type="button" className="wel-btn-primary" onClick={() => saveEditContract(c.id)}>儲存修改</button>
+                      <button type="button" className="wel-btn-ghost" onClick={cancelEditContract}>取消</button>
+                    </div>
+                  </div>
+                )}
+                {c.note && editingContractId !== c.id && (
+                  <div className="wel-floor-summary-line" style={{ whiteSpace: "pre-wrap" }}><span className="muted">備註：</span>{c.note}</div>
+                )}
                 <div className="wel-pipe-track">
                   <div className="wel-pipe-fill" style={{ width: `${Math.max(pct, c.paid > 0 ? 4 : 0)}%`, background: pct >= 100 ? "var(--green)" : "var(--amber)" }} />
                 </div>
@@ -4035,6 +4119,21 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
   );
 }
 
+// Free-text field that saves when you leave it (not on every keystroke) and picks up outside changes.
+function NoteInput({ value, onCommit, placeholder = "備註" }) {
+  const [draft, setDraft] = useState(value || "");
+  useEffect(() => { setDraft(value || ""); }, [value]);
+  const commit = () => { if (draft !== (value || "")) onCommit(draft.trim()); };
+  return (
+    <input
+      value={draft} placeholder={placeholder} title={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+    />
+  );
+}
+
 function ContractFiles({ contract, addContractFile, deleteContractFile, openContractFile }) {
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -4307,6 +4406,7 @@ function FloorItemsPanel({
                           <input placeholder="樓層（留空＝一般項目）" value={it.floor || ""} onChange={(e) => updateContractItem(it.id, { floor: e.target.value })} />
                           <input type="number" min="0" step="any" placeholder="%" title="佔總工程價格百分比" value={it.percent === undefined ? "" : it.percent} onChange={(e) => onItemPercentChange(it.id, e.target.value)} />
                           <input type="number" min="0" step="any" placeholder="金額" value={it.amount} onChange={(e) => onItemAmountChange(it.id, e.target.value)} />
+                          <NoteInput value={it.note} onCommit={(v) => updateContractItem(it.id, { note: v })} />
                           <button
                             type="button"
                             className={"wel-pay-import-btn" + (it.paidImported ? " imported" : "")}
@@ -4379,7 +4479,7 @@ function FloorItemsPanel({
             </div>
           </details>
 
-          <input placeholder="備註（選填）" value={newItem.note} onChange={(e) => setNewItem({ ...newItem, note: e.target.value })} style={{ width: "100%" }} />
+          <input className="wel-scan-input" placeholder="備註（選填）" value={newItem.note} onChange={(e) => setNewItem({ ...newItem, note: e.target.value })} style={{ width: "100%" }} />
 
           <button type="button" className="wel-btn-primary" style={{ alignSelf: "flex-start" }} onClick={handleAddNewItem}>
             <Plus size={14} /> 新增項目
@@ -4856,6 +4956,7 @@ function ClientFloorItemsPanel({
                           <input placeholder="樓層（留空＝一般項目）" value={it.floor || ""} onChange={(e) => updateFloorItem(it.id, { floor: e.target.value })} />
                           <input type="number" min="0" step="any" placeholder="%" title="佔總工程價格百分比" value={it.percent === undefined ? "" : it.percent} onChange={(e) => onItemPercentChange(it.id, e.target.value)} />
                           <input type="number" min="0" step="any" placeholder="金額" value={it.amount} onChange={(e) => onItemAmountChange(it.id, e.target.value)} />
+                          <NoteInput value={it.note} onCommit={(v) => updateFloorItem(it.id, { note: v })} />
                           <button
                             type="button"
                             className={"wel-pay-import-btn" + (it.paidImported ? " imported" : "")}
@@ -4928,7 +5029,7 @@ function ClientFloorItemsPanel({
             </div>
           </details>
 
-          <input placeholder="備註（選填）" value={newItem.note} onChange={(e) => setNewItem({ ...newItem, note: e.target.value })} style={{ width: "100%" }} />
+          <input className="wel-scan-input" placeholder="備註（選填）" value={newItem.note} onChange={(e) => setNewItem({ ...newItem, note: e.target.value })} style={{ width: "100%" }} />
 
           <button type="button" className="wel-btn-primary" style={{ alignSelf: "flex-start" }} onClick={handleAddNewItem}>
             <Plus size={14} /> 新增項目
@@ -5483,6 +5584,182 @@ function DiscussionTab({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+const WORKFLOW_TEMPLATE = ["接案與估價", "簽約與發包", "備料與叫貨", "進場施工", "驗收與請款", "結案與保固"];
+
+// 施工流程：階段 → 步驟，寫給之後接手的人看的經驗手冊（全案場共用）。
+function WorkflowTab({ workflow, saveWorkflow, showToast }) {
+  const [openPhases, setOpenPhases] = useState({});
+  const [editing, setEditing] = useState(null); // { type: "phase" | "step", phaseId, stepId, isNew }
+  const [draft, setDraft] = useState(null);
+  const isOpen = (id) => openPhases[id] !== false;
+  const togglePhase = (id) => setOpenPhases((prev) => ({ ...prev, [id]: !isOpen(id) }));
+  const stop = () => { setEditing(null); setDraft(null); };
+
+  const move = (arr, i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= arr.length) return arr;
+    const copy = arr.slice();
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+    return copy;
+  };
+  const startNewPhase = () => { setEditing({ type: "phase", phaseId: null, stepId: null, isNew: true }); setDraft({ title: "", summary: "" }); };
+  const startNewStep = (phaseId) => {
+    setOpenPhases((prev) => ({ ...prev, [phaseId]: true }));
+    setEditing({ type: "step", phaseId, stepId: null, isNew: true });
+    setDraft({ title: "", details: "", tips: "" });
+  };
+  const startEditPhase = (p) => { setEditing({ type: "phase", phaseId: p.id, stepId: null, isNew: false }); setDraft({ title: p.title, summary: p.summary || "" }); };
+  const startEditStep = (p, st) => { setEditing({ type: "step", phaseId: p.id, stepId: st.id, isNew: false }); setDraft({ title: st.title, details: st.details || "", tips: st.tips || "" }); };
+
+  const save = () => {
+    if (!draft.title.trim()) { showToast("請先填寫標題"); return; }
+    if (editing.type === "phase") {
+      const body = { title: draft.title.trim(), summary: draft.summary.trim() };
+      saveWorkflow(editing.isNew
+        ? [...workflow, { id: uid(), ...body, steps: [] }]
+        : workflow.map((p) => (p.id === editing.phaseId ? { ...p, ...body } : p)));
+    } else {
+      const body = { title: draft.title.trim(), details: draft.details.trim(), tips: draft.tips.trim() };
+      saveWorkflow(workflow.map((p) => {
+        if (p.id !== editing.phaseId) return p;
+        return { ...p, steps: editing.isNew ? [...p.steps, { id: uid(), ...body }] : p.steps.map((st) => (st.id === editing.stepId ? { ...st, ...body } : st)) };
+      }));
+    }
+    stop();
+  };
+  const deletePhase = (p) => {
+    if (!window.confirm(`確定要刪除階段「${p.title}」與底下 ${p.steps.length} 個步驟嗎？刪除後無法復原。`)) return;
+    saveWorkflow(workflow.filter((x) => x.id !== p.id));
+  };
+  const deleteStep = (p, st) => {
+    if (!window.confirm(`確定要刪除步驟「${st.title}」嗎？刪除後無法復原。`)) return;
+    saveWorkflow(workflow.map((x) => (x.id === p.id ? { ...x, steps: x.steps.filter((y) => y.id !== st.id) } : x)));
+  };
+  const applyTemplate = () => saveWorkflow(WORKFLOW_TEMPLATE.map((title) => ({ id: uid(), title, summary: "", steps: [] })));
+
+  const handleExportExcel = () => exportExcel("施工流程", [{
+    name: "施工流程",
+    rows: workflow.flatMap((p, i) => (p.steps.length ? p.steps : [{ title: "", details: "", tips: "" }]).map((st, j) => ({
+      階段: `${i + 1}. ${p.title}`, 階段說明: p.summary || "", 步驟: st.title ? `${i + 1}-${j + 1} ${st.title}` : "", 做法細節: st.details || "", "經驗／注意事項": st.tips || "",
+    }))),
+  }]);
+  const handleExportWord = () => exportWord("施工流程", "施工流程（經驗傳承）", workflow.map((p, i) => ({
+    title: `${i + 1}. ${p.title}`,
+    note: p.summary || undefined,
+    headers: ["步驟", "做法細節", "經驗／注意事項"],
+    rows: p.steps.map((st, j) => [`${i + 1}-${j + 1} ${st.title}`, st.details || "", st.tips || ""]),
+  })));
+
+  const form = (
+    <div className="wel-card wel-form" style={{ borderColor: "var(--teal)", marginTop: 10 }}>
+      <div className="wel-form-grid">
+        <Field label={editing && editing.type === "phase" ? "階段名稱" : "步驟名稱"} wide>
+          <input autoFocus placeholder={editing && editing.type === "phase" ? "例：進場施工" : "例：進場前先跟業主確認樓層動線"} value={draft ? draft.title : ""} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+        </Field>
+        {editing && editing.type === "phase" ? (
+          <Field label="這個階段在做什麼（選填）" wide>
+            <textarea rows={3} value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} />
+          </Field>
+        ) : (
+          <>
+            <Field label="做法細節（一步一步寫清楚，可以換行）" wide>
+              <textarea rows={7} placeholder={"例：\n1. 先到現場量測、拍照存證\n2. 跟業主確認配管位置…"} value={draft ? draft.details : ""} onChange={(e) => setDraft({ ...draft, details: e.target.value })} />
+            </Field>
+            <Field label="經驗／注意事項（踩過的坑、小技巧）" wide>
+              <textarea rows={4} value={draft ? draft.tips : ""} onChange={(e) => setDraft({ ...draft, tips: e.target.value })} />
+            </Field>
+          </>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" className="wel-btn-primary" onClick={save}>{editing && editing.isNew ? "新增" : "儲存修改"}</button>
+        <button type="button" className="wel-btn-ghost" onClick={stop}>取消</button>
+      </div>
+    </div>
+  );
+  const editingPhaseForm = (p) => editing && editing.type === "phase" && !editing.isNew && editing.phaseId === p.id;
+  const editingStepForm = (p, st) => editing && editing.type === "step" && !editing.isNew && editing.phaseId === p.id && editing.stepId === st.id;
+
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">流程 · WORKFLOW</div>
+          <h1 className="wel-h1">施工流程（經驗傳承）</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>
+        把從開始到結束的做法、順序與經驗寫在這裡，給之後接手的人照著做。所有案場共用同一份，隨時可以修改、調整順序或刪除。
+      </div>
+
+      {workflow.length === 0 && !editing && (
+        <div className="wel-card">
+          <Empty text="還沒有寫任何流程" />
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", marginTop: 8 }}>
+            <button type="button" className="wel-btn-primary" onClick={applyTemplate}>套用建議的階段（之後都可改）</button>
+            <button type="button" className="wel-btn-ghost" onClick={startNewPhase}><Plus size={14} /> 自己新增階段</button>
+          </div>
+        </div>
+      )}
+
+      {workflow.map((p, i) => (
+        <div key={p.id} className="wel-card" style={{ marginBottom: 12 }}>
+          {editingPhaseForm(p) ? form : (
+            <>
+              <div className="wel-vendor-head" style={{ marginBottom: 6 }}>
+                <button type="button" className="wel-expand-btn" onClick={() => togglePhase(p.id)}>{isOpen(p.id) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>
+                <span className="wel-vendor-name" style={{ cursor: "pointer" }} onClick={() => togglePhase(p.id)}>{i + 1}. {p.title}</span>
+                <span className="muted mono" style={{ fontSize: 11 }}>{p.steps.length} 個步驟</span>
+                <button className="wel-icon-btn" title="上移" disabled={i === 0} onClick={() => saveWorkflow(move(workflow, i, -1))}><ChevronUp size={14} /></button>
+                <button className="wel-icon-btn" title="下移" disabled={i === workflow.length - 1} onClick={() => saveWorkflow(move(workflow, i, 1))}><ChevronDown size={14} /></button>
+                <button className="wel-icon-btn" title="修改階段" onClick={() => startEditPhase(p)}><Pencil size={14} /></button>
+                <button className="wel-icon-btn" title="刪除階段" onClick={() => deletePhase(p)}><Trash2 size={14} /></button>
+              </div>
+              {p.summary && <div className="muted" style={{ fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 8 }}>{p.summary}</div>}
+            </>
+          )}
+          {isOpen(p.id) && !editingPhaseForm(p) && (
+            <>
+              {p.steps.map((st, j) => (
+                <div key={st.id} className="wel-discussion-card" style={{ marginTop: 8 }}>
+                  {editingStepForm(p, st) ? form : (
+                    <>
+                      <div className="wel-discussion-head">
+                        <span className="mono" style={{ color: "var(--amber)" }}>{i + 1}-{j + 1}</span>
+                        <span className="wel-discussion-topic">{st.title}</span>
+                        <button className="wel-icon-btn" title="上移" disabled={j === 0} onClick={() => saveWorkflow(workflow.map((x) => (x.id === p.id ? { ...x, steps: move(x.steps, j, -1) } : x)))}><ChevronUp size={14} /></button>
+                        <button className="wel-icon-btn" title="下移" disabled={j === p.steps.length - 1} onClick={() => saveWorkflow(workflow.map((x) => (x.id === p.id ? { ...x, steps: move(x.steps, j, 1) } : x)))}><ChevronDown size={14} /></button>
+                        <button className="wel-icon-btn" title="修改步驟" onClick={() => startEditStep(p, st)}><Pencil size={14} /></button>
+                        <button className="wel-icon-btn" title="刪除步驟" onClick={() => deleteStep(p, st)}><Trash2 size={14} /></button>
+                      </div>
+                      {st.details && <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.7, marginTop: 6 }}>{st.details}</div>}
+                      {st.tips && (
+                        <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.65, marginTop: 8, padding: "6px 10px", borderLeft: "3px solid var(--amber)", background: "rgba(232,163,61,0.08)", borderRadius: 4 }}>
+                          <span className="muted" style={{ fontSize: 11.5 }}>經驗／注意事項</span>{"\n"}{st.tips}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+              {editing && editing.isNew && editing.type === "step" && editing.phaseId === p.id && form}
+              {!(editing && editing.type === "step" && editing.isNew && editing.phaseId === p.id) && (
+                <button type="button" className="wel-btn-ghost" style={{ marginTop: 10 }} onClick={() => startNewStep(p.id)}><Plus size={13} /> 新增步驟</button>
+              )}
+            </>
+          )}
+        </div>
+      ))}
+
+      {editing && editing.isNew && editing.type === "phase" && form}
+      {workflow.length > 0 && !(editing && editing.isNew && editing.type === "phase") && (
+        <button type="button" className="wel-btn-primary" onClick={startNewPhase}><Plus size={15} /> 新增階段</button>
+      )}
     </div>
   );
 }
@@ -6480,7 +6757,7 @@ function StyleBlock() {
       .wel-profit-neg { color: var(--red); }
 
       .wel-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      @media (max-width: 860px) { .wel-grid2 { grid-template-columns: 1fr; } .wel-shell { flex-direction: column; min-height: 0; } .wel-sidebar { width: 100%; flex-direction: row; align-items: center; padding: 10px 14px; flex-wrap: wrap; } .wel-nav { flex-direction: row; flex-wrap: wrap; } .wel-navbtn { width: auto; } .wel-sidebar-foot { display: none; } .wel-brand { border-bottom: none; margin-bottom: 0; padding-bottom: 0; } .wel-back-to-sites { width: auto; margin-bottom: 0; flex-direction: row; align-items: center; gap: 6px; } .wel-back-label { display: none; } .wel-landing { padding: 24px 18px 40px; } .wel-landing-title { font-size: 22px; } .wel-main { max-height: none; overflow-y: visible; padding: 18px 14px 32px; } .wel-template-rows { overflow-x: auto; padding-bottom: 4px; } .wel-template-row, .wel-template-row-3, .wel-template-row-4, .wel-template-row-5, .wel-template-row-item { min-width: 480px; } }
+      @media (max-width: 860px) { .wel-grid2 { grid-template-columns: 1fr; } .wel-shell { flex-direction: column; min-height: 0; } .wel-sidebar { width: 100%; flex-direction: row; align-items: center; padding: 10px 14px; flex-wrap: wrap; } .wel-nav { flex-direction: row; flex-wrap: wrap; } .wel-navbtn { width: auto; } .wel-sidebar-foot { display: none; } .wel-brand { border-bottom: none; margin-bottom: 0; padding-bottom: 0; } .wel-back-to-sites { width: auto; margin-bottom: 0; flex-direction: row; align-items: center; gap: 6px; } .wel-back-label { display: none; } .wel-landing { padding: 24px 18px 40px; } .wel-landing-title { font-size: 22px; } .wel-main { max-height: none; overflow-y: visible; padding: 18px 14px 32px; } .wel-template-rows { overflow-x: auto; padding-bottom: 4px; } .wel-template-row, .wel-template-row-3, .wel-template-row-4, .wel-template-row-5, .wel-template-row-item { min-width: 480px; } .wel-template-row-item { min-width: 640px; } }
       html, body { overflow-x: hidden; max-width: 100%; }
       .wel-app { overflow-x: hidden; max-width: 100vw; }
 
@@ -6540,7 +6817,8 @@ function StyleBlock() {
       @media (max-width: 480px) { .wel-form-grid { grid-template-columns: 1fr !important; } }
       .wel-field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); min-width: 0; }
       .wel-field input, .wel-field select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 0 9px; font-family: var(--font-body); font-size: 13.5px; width: 100%; min-width: 0; height: 40px; box-sizing: border-box; }
-      .wel-field input:focus, .wel-field select:focus { outline: none; border-color: var(--teal); }
+      .wel-field textarea { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 9px; font-family: var(--font-body); font-size: 13.5px; width: 100%; min-width: 0; box-sizing: border-box; line-height: 1.55; resize: vertical; }
+      .wel-field input:focus, .wel-field select:focus, .wel-field textarea:focus { outline: none; border-color: var(--teal); }
       .wel-amount-preview { font-family: var(--font-mono); font-weight: 600; color: var(--amber); padding: 8px 0; font-size: 14px; }
 
       .wel-btn-primary {
@@ -6636,7 +6914,7 @@ function StyleBlock() {
       .wel-template-row-3 { grid-template-columns: 1fr 100px 1fr auto; }
       .wel-template-row-4 { grid-template-columns: 130px 1fr 100px 1fr auto; }
       .wel-template-row-5 { grid-template-columns: 120px 1fr 64px 90px 1fr auto; }
-      .wel-template-row-item { grid-template-columns: 118px 1fr 60px 90px auto auto; }
+      .wel-template-row-item { grid-template-columns: 118px 1fr 60px 90px 1.2fr auto auto; }
 
       .wel-item-name-group { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
       .wel-item-name-group:last-of-type { border-bottom: none; margin-bottom: 6px; }
