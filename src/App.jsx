@@ -9,9 +9,10 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
+import { parseReceiptText, parseItemListText } from "./receiptParse";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -182,6 +183,9 @@ export default function WaterElectricLedger() {
   const [contractItems, setContractItems] = useState([]);
   const [discussionItems, setDiscussionItems] = useState([]);
   const [notebookItems, setNotebookItems] = useState([]);
+  const [receipts, setReceipts] = useState([]);
+  const receiptsRef = useRef(receipts);
+  receiptsRef.current = receipts;
   const [capitalContributions, setCapitalContributions] = useState([]);
   const [fixedAssets, setFixedAssets] = useState([]);
   const [otherExpenses, setOtherExpenses] = useState([]);
@@ -205,6 +209,7 @@ export default function WaterElectricLedger() {
       const cwl = data.contractworklogs ?? [];
       const di = data.discussionitems ?? [];
       const nb = data.notebookitems ?? [];
+      const rc = data.receipts ?? [];
       const ci = data.contractitems ?? [];
       const mi = data.materialitems ?? [];
       const sup = data.suppliers ?? [];
@@ -241,6 +246,7 @@ export default function WaterElectricLedger() {
       setContractWorkLogs(cwl);
       setDiscussionItems(di);
       setNotebookItems(nb);
+      setReceipts(rc);
       setContractItems(ci);
       setMaterialItems(mi);
       setSuppliers(sup);
@@ -338,6 +344,11 @@ export default function WaterElectricLedger() {
   const persistDiscussionItems = useCallback(async (list) => {
     setSaving(true);
     await storageSet("discussionitems", list);
+    setSaving(false);
+  }, []);
+  const persistReceipts = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("receipts", list);
     setSaving(false);
   }, []);
   const persistNotebookItems = useCallback(async (list) => {
@@ -448,6 +459,10 @@ export default function WaterElectricLedger() {
   const openDiscussionCount = useMemo(
     () => siteDiscussionItems.filter((d) => !d.resolved).length,
     [siteDiscussionItems]
+  );
+  const siteReceipts = useMemo(
+    () => (isAllSites ? receipts : receipts.filter((r) => r.siteId === currentSiteId)),
+    [receipts, currentSiteId, isAllSites]
   );
   const siteNotebookItems = useMemo(
     () => (isAllSites ? notebookItems : notebookItems.filter((n) => n.siteId === currentSiteId)),
@@ -973,26 +988,104 @@ export default function WaterElectricLedger() {
   };
 
   // ---- 發包合約檔案 (files are chunked into separate Firestore docs; only metadata lives on the contract) ----
-  const addContractFile = async (contractId, file) => {
+  const uploadFileMeta = async (file) => {
     try {
       const prepared = await prepareUploadFile(file);
-      if (prepared.size > MAX_UPLOAD_BYTES) { showToast("檔案超過 5 MB，請壓縮後再上傳（照片會自動縮小，PDF 請先壓縮）"); return false; }
+      if (prepared.size > MAX_UPLOAD_BYTES) { showToast("檔案超過 5 MB，請壓縮後再上傳（照片會自動縮小，PDF 請先壓縮）"); return null; }
       const b64 = await blobToBase64(prepared);
       const fileId = uid() + uid();
       const chunks = await fileStore(fileId, b64);
-      if (!chunks) { showToast("上傳失敗，請檢查網路後再試一次"); return false; }
-      const meta = { id: fileId, name: prepared.name, size: prepared.size, type: prepared.type || "application/octet-stream", chunks, uploadedAt: todayStr() };
-      const next = contractsRef.current.map((c) => (c.id === contractId ? { ...c, files: [...(c.files || []), meta] } : c));
-      setContracts(next);
-      persistContracts(next);
-      showToast(`已上傳：${prepared.name}`);
-      return true;
+      if (!chunks) { showToast("上傳失敗，請檢查網路後再試一次"); return null; }
+      return { id: fileId, name: prepared.name, size: prepared.size, type: prepared.type || "application/octet-stream", chunks, uploadedAt: todayStr() };
     } catch (e) {
-      console.error("upload contract file failed", e);
+      console.error("upload file failed", e);
       showToast("上傳失敗，請檢查網路後再試一次");
-      return false;
+      return null;
     }
   };
+  const addContractFile = async (contractId, file) => {
+    const meta = await uploadFileMeta(file);
+    if (!meta) return false;
+    const next = contractsRef.current.map((c) => (c.id === contractId ? { ...c, files: [...(c.files || []), meta] } : c));
+    setContracts(next);
+    persistContracts(next);
+    showToast(`已上傳：${meta.name}`);
+    return true;
+  };
+
+  // ---- 收貨單相簿 (receipt photos, same chunked file storage as contracts) ----
+  const addReceipt = async ({ date, title, note, files }) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增收貨單"); return false; }
+    const metas = [];
+    for (const f of files) {
+      const meta = await uploadFileMeta(f);
+      if (!meta) { metas.forEach((m) => fileRemove(m.id, m.chunks)); return false; }
+      metas.push(meta);
+    }
+    const rec = { id: uid(), siteId: currentSiteId, date: date || todayStr(), title: (title || "").trim(), note: (note || "").trim(), files: metas };
+    const next = [rec, ...receiptsRef.current];
+    setReceipts(next);
+    persistReceipts(next);
+    showToast(`已儲存收貨單（${metas.length} 張照片）`);
+    return true;
+  };
+  const updateReceipt = (id, patch) => {
+    const next = receiptsRef.current.map((r) => (r.id === id ? { ...r, ...patch } : r));
+    setReceipts(next);
+    persistReceipts(next);
+  };
+  const deleteReceipt = (id) => {
+    const rec = receiptsRef.current.find((r) => r.id === id);
+    if (!rec || !window.confirm(`確定要刪除這張收貨單（${rec.files.length} 張照片）嗎？刪除後無法復原。`)) return;
+    rec.files.forEach((f) => fileRemove(f.id, f.chunks));
+    const next = receiptsRef.current.filter((r) => r.id !== id);
+    setReceipts(next);
+    persistReceipts(next);
+  };
+
+  // ---- 掃描校對後批次加入 ----
+  const addMaterialItemsBatch = (items) => {
+    const have = new Set(materialItems.map((m) => m.name));
+    const fresh = [];
+    items.forEach((it) => {
+      const nm = (it.name || "").trim();
+      if (!nm || have.has(nm)) return;
+      have.add(nm);
+      fresh.push({ id: uid(), name: nm, unit: (it.unit || "").trim(), defaultPrice: it.defaultPrice === "" || it.defaultPrice == null ? "" : Number(it.defaultPrice), categoryId: it.categoryId || "" });
+    });
+    if (!fresh.length) return 0;
+    const next = [...materialItems, ...fresh];
+    setMaterialItems(next);
+    persistMaterialItems(next);
+    return fresh.length;
+  };
+  const confirmScannedItems = (rows) => {
+    const n = addMaterialItemsBatch(rows.map((r) => ({ name: r.name, unit: r.unit, defaultPrice: r.defaultPrice, categoryId: r.categoryId })));
+    showToast(n ? `已加入 ${n} 個品項到品項清單` : "這些品項都已經在品項清單裡了");
+  };
+  const confirmScannedOrders = async (rows, meta, photoFile) => {
+    const recs = rows.map((r) => {
+      const qty = Number(r.quantity);
+      const price = Number(r.unitPrice);
+      return {
+        id: uid(), date: meta.date, categoryId: r.categoryId || categories[0]?.id || "", itemName: r.name.trim(), supplier: meta.supplier || "",
+        quantity: qty, unit: r.unit || "", unitPrice: price, note: "收貨單掃描", hasInvoice: !!meta.hasInvoice, applyTax: false, taxRate: 5,
+        siteId: currentSiteId, amount: qty * price,
+      };
+    });
+    const next = [...recs, ...orders];
+    setOrders(next);
+    persistOrders(next);
+    let added = 0;
+    if (meta.addNewItems) {
+      added = addMaterialItemsBatch(rows.map((r) => ({ name: r.name, unit: r.unit, defaultPrice: r.unitPrice, categoryId: r.categoryId })));
+    }
+    showToast(`已加入叫貨 ${recs.length} 筆${added ? `，並新增 ${added} 個品項到品項清單` : ""}`);
+    if (meta.saveToAlbum && photoFile) {
+      await addReceipt({ date: meta.date, title: meta.supplier ? `${meta.supplier} 叫貨` : "叫貨收貨單", note: `掃描入帳 ${recs.length} 筆`, files: [photoFile] });
+    }
+  };
+
   const deleteContractFile = (contractId, file) => {
     if (!window.confirm(`確定要刪除合約檔案「${file.name}」嗎？刪除後無法復原。`)) return;
     const next = contractsRef.current.map((c) => (c.id === contractId ? { ...c, files: (c.files || []).filter((f) => f.id !== file.id) } : c));
@@ -1590,6 +1683,7 @@ export default function WaterElectricLedger() {
           <nav className="wel-nav">
             <NavBtn icon={<HardHat size={16} />} label="師傅出工" active={tab === "labor"} onClick={() => setTab("labor")} />
             <NavBtn icon={<ClipboardList size={16} />} label="叫貨紀錄" active={tab === "orders"} onClick={() => setTab("orders")} />
+            <NavBtn icon={<Camera size={16} />} label="收貨單" active={tab === "receipts"} onClick={() => setTab("receipts")} />
             <NavBtn icon={<Wrench size={16} />} label="領料使用" active={tab === "usages"} onClick={() => setTab("usages")} />
             <NavBtn icon={<Boxes size={16} />} label="庫存現況" active={tab === "inventory"} onClick={() => setTab("inventory")} />
             <NavBtn icon={<Tags size={16} />} label="品項類別" active={tab === "categories"} onClick={() => setTab("categories")} />
@@ -1665,6 +1759,7 @@ export default function WaterElectricLedger() {
               updateSupplier={updateSupplier}
               removeSupplier={removeSupplier}
               showToast={showToast}
+              confirmScannedOrders={confirmScannedOrders}
             />
           )}
           {tab === "usages" && (
@@ -1682,6 +1777,20 @@ export default function WaterElectricLedger() {
               isAllSites={isAllSites}
               sites={sites}
               setCurrentSiteId={setCurrentSiteId}
+            />
+          )}
+          {tab === "receipts" && (
+            <ReceiptsTab
+              receipts={siteReceipts}
+              siteById={siteById}
+              suppliers={suppliers}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
+              addReceipt={addReceipt}
+              updateReceipt={updateReceipt}
+              deleteReceipt={deleteReceipt}
+              showToast={showToast}
             />
           )}
           {tab === "inventory" && (
@@ -1746,6 +1855,8 @@ export default function WaterElectricLedger() {
               addMaterialItem={addMaterialItem}
               updateMaterialItem={updateMaterialItem}
               removeMaterialItem={removeMaterialItem}
+              confirmScannedItems={confirmScannedItems}
+              showToast={showToast}
             />
           )}
           {tab === "contracts" && (
@@ -2148,7 +2259,8 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
   );
 }
 
-function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, itemSuggestions, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast }) {
+function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, itemSuggestions, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders }) {
+  const [scanOpen, setScanOpen] = useState(false);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const startEditOrder = (o) => {
@@ -2238,6 +2350,20 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
       </div>
 
       {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增叫貨紀錄" />}
+
+      {!isAllSites && (
+        <div style={{ marginBottom: 12 }}>
+          {scanOpen ? (
+            <ReceiptScanner
+              mode="order" categories={categories} materialItems={materialItems} suppliers={suppliers}
+              defaultCategoryId={orderForm.categoryId} onConfirmOrders={confirmScannedOrders}
+              onClose={() => setScanOpen(false)} showToast={showToast}
+            />
+          ) : (
+            <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照辨識收貨單（先校對再存入叫貨）</button>
+          )}
+        </div>
+      )}
 
       <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
         <div className="wel-form-grid">
@@ -3523,6 +3649,392 @@ function ContractsTab({
   );
 }
 
+function ReceiptPhoto({ file }) {
+  const [url, setUrl] = useState("");
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    let objectUrl = "";
+    (async () => {
+      try {
+        const blob = base64ToBlob(await fileLoad(file.id, file.chunks), file.type);
+        objectUrl = URL.createObjectURL(blob);
+        if (alive) setUrl(objectUrl);
+      } catch (e) {
+        if (alive) setFailed(true);
+      }
+    })();
+    return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [file.id, file.chunks, file.type]);
+  if (failed) return <div className="muted" style={{ fontSize: 12 }}>照片讀取失敗，請稍後再試</div>;
+  if (!url) return <div className="muted" style={{ fontSize: 12 }}>照片載入中…</div>;
+  return <img src={url} alt={file.name} onClick={() => window.open(url, "_blank")} style={{ maxWidth: "100%", width: 380, borderRadius: 8, border: "1px solid var(--border)", cursor: "zoom-in" }} />;
+}
+
+function ReceiptsTab({ receipts, siteById, suppliers, isAllSites, sites, setCurrentSiteId, addReceipt, updateReceipt, deleteReceipt, showToast }) {
+  const [form, setForm] = useState({ date: todayStr(), title: "", note: "" });
+  const [photos, setPhotos] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [openMonths, setOpenMonths] = useState({});
+  const [openId, setOpenId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+
+  const onPick = (e) => {
+    const list = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (list.length) setPhotos((prev) => [...prev, ...list]);
+  };
+  const submit = async () => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增收貨單"); return; }
+    if (!photos.length) { showToast("請先拍照或選擇收貨單照片"); return; }
+    setBusy(true);
+    const ok = await addReceipt({ ...form, files: photos });
+    setBusy(false);
+    if (ok) { setPhotos([]); setForm({ date: todayStr(), title: "", note: "" }); }
+  };
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return receipts;
+    return receipts.filter((r) => (r.title || "").toLowerCase().includes(q) || (r.note || "").toLowerCase().includes(q) || (r.date || "").includes(q));
+  }, [receipts, query]);
+  const startEdit = (r) => { setEditingId(r.id); setDraft({ date: r.date, title: r.title || "", note: r.note || "" }); };
+  const saveEdit = (id) => { updateReceipt(id, { date: draft.date, title: draft.title.trim(), note: draft.note.trim() }); setEditingId(null); setDraft(null); };
+
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">收貨單 · DELIVERY SLIPS</div>
+          <h1 className="wel-h1">收貨單相簿</h1>
+        </div>
+      </div>
+
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增收貨單" />}
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><Camera size={14} /> 新增收貨單照片</div>
+        <div className="wel-form-grid">
+          <Field label="日期">
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+          </Field>
+          <Field label="廠商 / 標題" wide>
+            <input list="wel-receipt-suppliers" placeholder="例：賀倫水電材料行" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+            <datalist id="wel-receipt-suppliers">{suppliers.map((s) => <option key={s.id} value={s.name} />)}</datalist>
+          </Field>
+          <Field label="備註" wide>
+            <input placeholder="選填，例：10/20 水管進貨" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          </Field>
+        </div>
+        <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={onPick} />
+        <input ref={galRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={onPick} />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <button type="button" className="wel-btn-ghost" onClick={() => camRef.current && camRef.current.click()}><Camera size={14} /> 拍照</button>
+          <button type="button" className="wel-btn-ghost" onClick={() => galRef.current && galRef.current.click()}><ImagePlus size={14} /> 選擇照片（可多張）</button>
+        </div>
+        {photos.length > 0 && (
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+            {photos.map((f, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ wordBreak: "break-all" }}>{f.name}</span><span className="mono">{fmtSize(f.size)}</span>
+                <button type="button" className="wel-icon-btn" onClick={() => setPhotos((prev) => prev.filter((_, k) => k !== i))}><X size={12} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button type="button" className="wel-btn-primary" disabled={busy} onClick={submit}>{busy ? "上傳中…（照片較大時需要一點時間）" : <><Plus size={15} /> 儲存收貨單</>}</button>
+      </div>
+
+      <div className="wel-card">
+        <div className="wel-card-title-row">
+          <div className="wel-card-title"><CalendarRange size={14} /> 收貨單紀錄（依年月點開查詢）</div>
+          <div className="wel-filter">
+            <input className="wel-scan-input" placeholder="搜尋廠商／備註／日期" value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: 190 }} />
+          </div>
+        </div>
+        {filtered.length === 0 && <Empty text={receipts.length ? "沒有符合的收貨單" : "尚未新增任何收貨單"} />}
+        {attendanceByMonth(filtered).map((mg) => {
+          const mOpen = !!openMonths[mg.month] || !!query.trim();
+          return (
+            <div key={mg.month} className="wel-item-floor-group">
+              <button type="button" className="wel-item-group-label wel-item-group-toggle" onClick={() => setOpenMonths((prev) => ({ ...prev, [mg.month]: !prev[mg.month] }))}>
+                {mOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                {mg.month} · {mg.items.length} 張
+              </button>
+              {mOpen && mg.items.map((r) => {
+                const isOpen = openId === r.id;
+                return (
+                  <div key={r.id} className="wel-discussion-card">
+                    {editingId === r.id ? (
+                      <div className="wel-timeline-wrap" style={{ padding: 0 }}>
+                        <div className="wel-form-grid">
+                          <Field label="日期"><input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field>
+                          <Field label="廠商 / 標題" wide><input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></Field>
+                          <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                        </div>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button type="button" className="wel-btn-primary" onClick={() => saveEdit(r.id)}>儲存修改</button>
+                          <button type="button" className="wel-btn-ghost" onClick={() => { setEditingId(null); setDraft(null); }}>取消</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="wel-discussion-head wel-row-clickable" onClick={() => setOpenId(isOpen ? null : r.id)}>
+                          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          <span className="mono">{r.date}</span>
+                          <span className="wel-discussion-topic">{r.title || "（未填標題）"}</span>
+                          {isAllSites && <span className="wel-tag">{siteById[r.siteId]?.name || "—"}</span>}
+                          <span className="muted mono" style={{ fontSize: 11.5 }}>{r.files.length} 張</span>
+                          <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); startEdit(r); }}><Pencil size={14} /></button>
+                          <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteReceipt(r.id); }}><Trash2 size={14} /></button>
+                        </div>
+                        {r.note && <div className="wel-discussion-note muted">{r.note}</div>}
+                        {isOpen && (
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                            {r.files.map((f) => <ReceiptPhoto key={f.id} file={f} />)}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Photo -> OCR -> editable table. Nothing is saved until the user presses the confirm button.
+function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCategoryId, onConfirmOrders, onConfirmItems, onClose, showToast }) {
+  const isOrder = mode === "order";
+  const [phase, setPhase] = useState("pick");
+  const [file, setFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [progress, setProgress] = useState({ label: "", pct: 0 });
+  const [rawText, setRawText] = useState("");
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [meta, setMeta] = useState({ date: todayStr(), supplier: "", hasInvoice: true, saveToAlbum: true, addNewItems: true, categoryId: defaultCategoryId || categories[0]?.id || "" });
+  const camRef = useRef(null);
+  const galRef = useRef(null);
+  const ocrRef = useRef(null);
+  const seq = useRef(0);
+
+  useEffect(() => () => { if (ocrRef.current) ocrRef.current.terminateOcr(); }, []);
+  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+
+  const scan = async (f) => {
+    setFile(f);
+    setPreviewUrl(URL.createObjectURL(f));
+    setPhase("scanning");
+    setError("");
+    setProgress({ label: "載入辨識引擎…（第一次使用需下載約 7 MB，之後會快很多）", pct: 0 });
+    try {
+      const ocr = ocrRef.current || (ocrRef.current = await import("./ocr.js"));
+      const text = await ocr.recognizeText(f, (m) => {
+        const st = String(m.status || "");
+        const label = st.includes("recognizing") ? "辨識文字中…" : st.includes("language") ? "載入中文字庫…" : "載入辨識引擎…";
+        setProgress({ label, pct: Math.round((m.progress || 0) * 100) });
+      });
+      setRawText(text);
+      const parsed = isOrder ? parseReceiptText(text, materialItems) : parseItemListText(text, materialItems);
+      setRows(parsed.map((r) => (isOrder
+        ? { ...r, include: true, categoryId: r.categoryId || meta.categoryId }
+        : { ...r, include: !r.exists && (r.unit !== "" || r.defaultPrice !== ""), categoryId: meta.categoryId })));
+    } catch (e) {
+      console.error("ocr failed", e);
+      setRows([]);
+      setError("辨識失敗了。請重新拍一張（光線充足、拍正、對焦清楚），或直接在下方手動新增。");
+    }
+    setPhase("review");
+  };
+  const onPick = (e) => {
+    const f = (e.target.files || [])[0];
+    e.target.value = "";
+    if (f) scan(f);
+  };
+
+  const patchRow = (id, patch) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const removeRow = (id) => setRows((prev) => prev.filter((r) => r.id !== id));
+  const addRow = () => setRows((prev) => [...prev, isOrder
+    ? { id: "m" + ++seq.current, raw: "", name: "", matchedId: "", categoryId: meta.categoryId, quantity: "", unit: "", unitPrice: "", include: true }
+    : { id: "m" + ++seq.current, raw: "", name: "", unit: "", defaultPrice: "", exists: false, include: true, categoryId: meta.categoryId }]);
+  const setName = (id, name) => {
+    const item = materialItems.find((m) => m.name === name.trim());
+    setRows((prev) => prev.map((r) => {
+      if (r.id !== id) return r;
+      if (!item) return { ...r, name, matchedId: "" };
+      return isOrder
+        ? { ...r, name, matchedId: item.id, categoryId: item.categoryId || r.categoryId, unit: r.unit || item.unit || "", unitPrice: r.unitPrice === "" ? (item.defaultPrice ?? "") : r.unitPrice }
+        : { ...r, name, exists: true, include: false };
+    }));
+  };
+
+  const confirm = async () => {
+    const chosen = rows.filter((r) => r.include);
+    if (!chosen.length) { showToast("請至少勾選一列要加入的項目"); return; }
+    for (const r of chosen) {
+      const n = rows.indexOf(r) + 1;
+      if (!r.name.trim()) { showToast(`第 ${n} 列沒有品項名稱`); return; }
+      if (isOrder) {
+        if (!(Number(r.quantity) > 0)) { showToast(`第 ${n} 列「${r.name}」的數量要大於 0`); return; }
+        if (r.unitPrice === "" || !(Number(r.unitPrice) >= 0)) { showToast(`第 ${n} 列「${r.name}」缺少單價`); return; }
+      }
+    }
+    setSaving(true);
+    try {
+      if (isOrder) await onConfirmOrders(chosen, meta, meta.saveToAlbum ? file : null);
+      else onConfirmItems(chosen);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const total = rows.filter((r) => r.include).reduce((sum, r) => sum + (isOrder ? (Number(r.quantity) || 0) * (Number(r.unitPrice) || 0) : 0), 0);
+  const catSelect = (value, onChange) => (
+    <select className="wel-scan-input" value={value} onChange={onChange}>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+  );
+
+  return (
+    <div className="wel-card wel-form" style={{ borderColor: "var(--teal)" }}>
+      <div className="wel-card-title-row">
+        <div className="wel-card-title"><ScanLine size={14} /> {isOrder ? "拍照辨識收貨單 → 校對 → 存入叫貨" : "拍照掃描品項 → 校對 → 加入品項清單"}</div>
+        <button type="button" className="wel-btn-ghost" onClick={onClose}>關閉</button>
+      </div>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={onPick} />
+      <input ref={galRef} type="file" accept="image/*" style={{ display: "none" }} onChange={onPick} />
+
+      {phase === "pick" && (
+        <>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            {isOrder ? "拍下收貨單／送貨單，網頁會在你的手機或電腦上直接辨識品名與數量（照片不會傳給第三方）。辨識結果只是「建議」，一定會先讓你校對修改，按確認後才會存入。" : "拍下品項清單、價目表或貨品標示，網頁會辨識出品名、單位與單價，讓你校對修改後再加入品項清單。"}
+            <br />小提醒：光線充足、整張拍正、字要清楚；手寫字辨識較不準，請多留意校對。
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" className="wel-btn-primary" onClick={() => camRef.current && camRef.current.click()}><Camera size={15} /> 拍照</button>
+            <button type="button" className="wel-btn-ghost" onClick={() => galRef.current && galRef.current.click()}><ImagePlus size={15} /> 選擇照片</button>
+          </div>
+        </>
+      )}
+
+      {phase === "scanning" && (
+        <div style={{ padding: "12px 0" }}>
+          <div style={{ fontSize: 13, marginBottom: 6 }}>{progress.label} {progress.pct ? progress.pct + "%" : ""}</div>
+          <div className="wel-pipe-track"><div className="wel-pipe-fill" style={{ width: Math.max(progress.pct, 4) + "%", background: "var(--teal)" }} /></div>
+        </div>
+      )}
+
+      {phase === "review" && (
+        <>
+          {error && <div className="wel-mismatch" style={{ marginBottom: 8 }}>{error}</div>}
+          {isOrder ? (
+            <div className="wel-form-grid">
+              <Field label="日期"><input type="date" value={meta.date} onChange={(e) => setMeta({ ...meta, date: e.target.value })} /></Field>
+              <Field label="廠商 / 供應商">
+                <select value={meta.supplier} onChange={(e) => setMeta({ ...meta, supplier: e.target.value })}>
+                  <option value="">（未指定）</option>
+                  {suppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+                </select>
+              </Field>
+              <Field label="有無發票">
+                <select value={meta.hasInvoice ? "yes" : "no"} onChange={(e) => setMeta({ ...meta, hasInvoice: e.target.value === "yes" })}>
+                  <option value="yes">有發票</option><option value="no">無發票</option>
+                </select>
+              </Field>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+              <span className="muted" style={{ fontSize: 12 }}>全部歸入類別：</span>
+              {catSelect(meta.categoryId, (e) => setMeta({ ...meta, categoryId: e.target.value }))}
+              <button type="button" className="wel-btn-ghost" onClick={() => setRows((prev) => prev.map((r) => ({ ...r, categoryId: meta.categoryId })))}>套用到全部列</button>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
+            {previewUrl && (
+              <div style={{ flex: "0 0 240px", maxWidth: "100%" }}>
+                <img src={previewUrl} alt="收貨單照片" onClick={() => window.open(previewUrl, "_blank")} style={{ width: "100%", borderRadius: 8, border: "1px solid var(--border)", cursor: "zoom-in" }} />
+                <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>點照片可放大對照</div>
+                <button type="button" className="wel-btn-ghost" style={{ marginTop: 6 }} onClick={() => { setPhase("pick"); setRows([]); setRawText(""); }}>重新拍一張</button>
+              </div>
+            )}
+            <div style={{ flex: "1 1 420px", minWidth: 0, overflowX: "auto" }}>
+              <datalist id="wel-scan-items">{materialItems.map((m) => <option key={m.id} value={m.name} />)}</datalist>
+              <table className="wel-table">
+                <thead>
+                  {isOrder
+                    ? <tr><th></th><th>品項</th><th>類別</th><th className="right">數量</th><th>單位</th><th className="right">單價</th><th className="right">小計</th><th></th></tr>
+                    : <tr><th></th><th>品項名稱</th><th>類別</th><th>單位</th><th className="right">預設單價</th><th></th></tr>}
+                </thead>
+                <tbody>
+                  {rows.length === 0 && <tr><td colSpan={isOrder ? 8 : 6}><Empty text="沒有辨識到項目，請按下方「新增一列」手動輸入" /></td></tr>}
+                  {rows.map((r, idx) => (
+                    <tr key={r.id} style={isOrder && !r.matchedId ? { background: "rgba(232,163,61,0.08)" } : undefined}>
+                      <td><input type="checkbox" checked={r.include} onChange={(e) => patchRow(r.id, { include: e.target.checked })} style={{ width: 16, height: 16 }} /></td>
+                      <td style={{ minWidth: 190 }}>
+                        <input className="wel-scan-input wel-scan-name" list="wel-scan-items" value={r.name} onChange={(e) => setName(r.id, e.target.value)} placeholder="品項名稱" />
+                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                          {isOrder ? (r.matchedId ? "✓ 已對應品項清單" : "未在品項清單內（可改選清單品項，或當作新品項）") : (r.exists ? "已在品項清單內（預設不加入）" : "新品項")}
+                          {r.raw ? ` · 原文：${r.raw}` : ""}
+                        </div>
+                      </td>
+                      <td>{catSelect(r.categoryId, (e) => patchRow(r.id, { categoryId: e.target.value }))}</td>
+                      {isOrder ? (
+                        <>
+                          <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 74 }} value={r.quantity} onChange={(e) => patchRow(r.id, { quantity: e.target.value })} /></td>
+                          <td><input className="wel-scan-input" style={{ width: 56 }} value={r.unit} onChange={(e) => patchRow(r.id, { unit: e.target.value })} /></td>
+                          <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 86 }} value={r.unitPrice} onChange={(e) => patchRow(r.id, { unitPrice: e.target.value })} /></td>
+                          <td className="right mono">{fmtMoney((Number(r.quantity) || 0) * (Number(r.unitPrice) || 0))}</td>
+                        </>
+                      ) : (
+                        <>
+                          <td><input className="wel-scan-input" style={{ width: 64 }} value={r.unit} onChange={(e) => patchRow(r.id, { unit: e.target.value })} /></td>
+                          <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 90 }} value={r.defaultPrice} onChange={(e) => patchRow(r.id, { defaultPrice: e.target.value })} /></td>
+                        </>
+                      )}
+                      <td><button type="button" className="wel-icon-btn" title={`刪除第 ${idx + 1} 列`} onClick={() => removeRow(r.id)}><Trash2 size={13} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" className="wel-btn-ghost" onClick={addRow}><Plus size={13} /> 新增一列</button>
+                {isOrder && <span className="muted mono" style={{ fontSize: 12 }}>已勾選合計：{fmtMoney(total)}</span>}
+              </div>
+              {rawText && (
+                <details style={{ marginTop: 8 }}>
+                  <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>查看辨識到的原始文字</summary>
+                  <pre style={{ whiteSpace: "pre-wrap", fontSize: 11.5, margin: "6px 0 0" }}>{rawText}</pre>
+                </details>
+              )}
+            </div>
+          </div>
+          {isOrder && (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", margin: "10px 0", fontSize: 13 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={meta.addNewItems} onChange={(e) => setMeta({ ...meta, addNewItems: e.target.checked })} style={{ width: 16, height: 16 }} /> 新品項同時加入品項清單
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={meta.saveToAlbum} onChange={(e) => setMeta({ ...meta, saveToAlbum: e.target.checked })} style={{ width: 16, height: 16 }} /> 同時把照片存到「收貨單」相簿
+              </label>
+            </div>
+          )}
+          <button type="button" className="wel-btn-primary" disabled={saving} onClick={confirm} style={{ marginTop: 8 }}>
+            {saving ? "儲存中…" : isOrder ? `確認無誤，加入叫貨（${rows.filter((r) => r.include).length} 筆）` : `確認無誤，加入品項清單（${rows.filter((r) => r.include).length} 項）`}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ContractFiles({ contract, addContractFile, deleteContractFile, openContractFile }) {
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -4625,11 +5137,24 @@ function MasterSummaryTab({
   );
 }
 
-function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem }) {
+function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, showToast }) {
+  const [scanOpen, setScanOpen] = useState(false);
   const countFor = (id) => orders.filter((o) => o.categoryId === id).length + usages.filter((u) => u.categoryId === id).length;
   const [newMaterial, setNewMaterial] = useState({ name: "", unit: "", defaultPrice: "" });
   const sortedMaterials = useMemo(() => materialItems.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [materialItems]);
   const orderCountFor = (name) => orders.filter((o) => o.itemName === name).length;
+  const catIds = useMemo(() => new Set(categories.map((c) => c.id)), [categories]);
+  const itemsOf = (id) => sortedMaterials.filter((m) => m.categoryId === id);
+  const uncategorizedItems = sortedMaterials.filter((m) => !m.categoryId || !catIds.has(m.categoryId));
+  const itemChips = (list) => (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+      {list.map((m) => (
+        <span key={m.id} className="wel-chip">
+          {m.name}{m.unit ? `（${m.unit}）` : ""}{m.defaultPrice !== "" && m.defaultPrice != null ? ` · ${fmtMoney(m.defaultPrice)}` : ""}
+        </span>
+      ))}
+    </div>
+  );
   const [expandedCat, setExpandedCat] = useState(null);
   const [expandedMaterial, setExpandedMaterial] = useState(null);
 
@@ -4660,22 +5185,58 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
                 </button>
                 <span className="wel-dot" style={{ background: c.color }} />
                 <ItemNameHeader name={c.name} onRename={(newName) => renameCategory(c.id, newName)} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{countFor(c.id)} 筆紀錄</span>
+                <span className="muted mono" style={{ fontSize: 12 }}>{itemsOf(c.id).length} 項品項 · {countFor(c.id)} 筆紀錄</span>
                 <button className="wel-icon-btn" onClick={() => removeCategory(c.id)}><X size={14} /></button>
               </div>
               {isOpen && (
                 <div className="wel-timeline-wrap">
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>這個類別底下的小項品項（{itemsOf(c.id).length}）</div>
+                  {itemsOf(c.id).length === 0
+                    ? <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>尚無品項，可在下方「品項清單」把品項的類別設成「{c.name}」，或用拍照掃描新增</div>
+                    : itemChips(itemsOf(c.id))}
                   <OrderTimeline items={orders.filter((o) => o.categoryId === c.id)} />
                 </div>
               )}
             </div>
           );
         })}
+        {uncategorizedItems.length > 0 && (
+          <div>
+            <div className="wel-cat-item">
+              <button type="button" className="wel-expand-btn" onClick={() => setExpandedCat(expandedCat === "__none" ? null : "__none")}>
+                {expandedCat === "__none" ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+              </button>
+              <span className="wel-dot" style={{ background: "var(--text-muted)" }} />
+              <span className="wel-cat-name">未歸類</span>
+              <span className="muted mono" style={{ fontSize: 12 }}>{uncategorizedItems.length} 項品項</span>
+            </div>
+            {expandedCat === "__none" && (
+              <div className="wel-timeline-wrap">
+                <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>還沒指定類別的品項，到下方「品項清單」的類別欄位歸類後，叫貨時就會依類別列出</div>
+                {itemChips(uncategorizedItems)}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Material item catalog — same list used by the 叫貨 wheel-picker, fully manageable here */}
+      {scanOpen && (
+        <div style={{ marginTop: 22 }}>
+          <ReceiptScanner
+            mode="items" categories={categories} materialItems={materialItems} suppliers={[]}
+            defaultCategoryId={categories[0]?.id} onConfirmItems={confirmScannedItems}
+            onClose={() => setScanOpen(false)} showToast={showToast}
+          />
+        </div>
+      )}
       <div className="wel-card wel-form" style={{ marginTop: 22 }}>
         <div className="wel-card-title"><Package size={14} /> 品項清單（連動叫貨的品項選單，可重新命名、刪除、查詢時間軸）</div>
+        {!scanOpen && (
+          <div style={{ marginBottom: 10 }}>
+            <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照掃描品項（先校對再加入）</button>
+          </div>
+        )}
         <div className="wel-material-add-row">
           <input placeholder="新品項名稱" value={newMaterial.name} onChange={(e) => setNewMaterial({ ...newMaterial, name: e.target.value })} />
           <input placeholder="單位" value={newMaterial.unit} onChange={(e) => setNewMaterial({ ...newMaterial, unit: e.target.value })} style={{ width: 90 }} />
@@ -5970,6 +6531,8 @@ function StyleBlock() {
       .wel-manager-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
       .wel-manager-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
       .wel-manager-name { flex: 1; min-width: 70px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-body); }
+      .wel-scan-input { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 13px; min-width: 0; box-sizing: border-box; }
+      .wel-scan-name { width: 100%; min-width: 210px; }
       .wel-manager-mini { width: 74px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-mono); }
 
       .wel-form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 14px; margin-bottom: 14px; }
