@@ -167,7 +167,7 @@ export default function WaterElectricLedger() {
   const [view, setView] = useState("sites"); // "sites" (landing page) | "workspace"
   const enterSite = useCallback((siteId) => {
     setCurrentSiteId(siteId);
-    setTab("labor");
+    setTab(siteId === "all" ? "dashboard" : "labor");
     setView("workspace");
   }, []);
   const returnToSites = useCallback(() => setView("sites"), []);
@@ -582,12 +582,6 @@ export default function WaterElectricLedger() {
       .sort((a, b) => a.remaining - b.remaining);
   }, [siteOrders, siteUsages]);
 
-  const itemSuggestions = useMemo(() => {
-    const s = new Set();
-    siteOrders.forEach((o) => s.add(o.itemName));
-    return Array.from(s);
-  }, [siteOrders]);
-
   const workerById = useMemo(() => {
     const m = {};
     workers.forEach((w) => (m[w.id] = w));
@@ -685,36 +679,20 @@ export default function WaterElectricLedger() {
   const profitLoss = clientPaidTotal - projectGrandTotal;
 
   const siteBreakdown = useMemo(() => {
+    const blank = (id, name) => ({ id, name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0, other: 0, asset: 0 });
     const map = {};
-    sites.forEach((s) => (map[s.id] = { id: s.id, name: s.name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0, other: 0, asset: 0 }));
-    orders.forEach((o) => {
-      if (!map[o.siteId]) return;
-      map[o.siteId].material += Number(o.amount) || 0;
-    });
-    workLogs.forEach((l) => {
-      if (!map[l.siteId]) return;
-      map[l.siteId].labor += (Number(l.days) || 0) * workLogRate(l);
-    });
-    payments.forEach((p) => {
-      if (!map[p.siteId]) return;
-      map[p.siteId].contract += Number(p.amount) || 0;
-    });
-    clientPayments.forEach((p) => {
-      if (!map[p.siteId]) return;
-      map[p.siteId].collected += Number(p.amount) || 0;
-    });
-    capitalContributions.forEach((c) => {
-      if (!map[c.siteId]) return;
-      map[c.siteId].capital += Number(c.amount) || 0;
-    });
-    otherExpenses.forEach((e) => {
-      if (!map[e.siteId]) return;
-      map[e.siteId].other += Number(e.amount) || 0;
-    });
-    fixedAssets.forEach((f) => {
-      if (!map[f.siteId]) return;
-      map[f.siteId].asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1);
-    });
+    sites.forEach((s) => (map[s.id] = blank(s.id, s.name)));
+    // 紀錄所屬的案場已被刪除時，獨立列成一列，避免總數對不起來
+    const bucket = (siteId) => map[siteId] || map.__orphan || (map.__orphan = blank("__orphan", "（已刪除案場的紀錄）"));
+    orders.forEach((o) => { bucket(o.siteId).material += Number(o.amount) || 0; });
+    workLogs.forEach((l) => { bucket(l.siteId).labor += (Number(l.days) || 0) * workLogRate(l); });
+    payments.forEach((p) => { bucket(p.siteId).contract += Number(p.amount) || 0; });
+    clientPayments.forEach((p) => { bucket(p.siteId).collected += Number(p.amount) || 0; });
+    capitalContributions.forEach((c) => { bucket(c.siteId).capital += Number(c.amount) || 0; });
+    otherExpenses.forEach((e) => { bucket(e.siteId).other += Number(e.amount) || 0; });
+    fixedAssets.forEach((f) => { bucket(f.siteId).asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1); });
+    const o = map.__orphan;
+    if (o && !(o.material || o.labor || o.contract || o.collected || o.capital || o.other || o.asset)) delete map.__orphan;
     return Object.values(map)
       .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset), balance: s.capital + s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
       .sort((a, b) => b.total - a.total);
@@ -722,9 +700,7 @@ export default function WaterElectricLedger() {
 
   // ---- forms ----
   const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
-  const emptyUsage = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", quantity: "", unit: "", location: "", type: "out" };
   const [orderForm, setOrderForm] = useState(emptyOrder);
-  const [usageForm, setUsageForm] = useState(emptyUsage);
   const [newCatName, setNewCatName] = useState("");
   const [newWorker, setNewWorker] = useState({ name: "", dailyRate: "" });
   const emptyWorkLog = { workerId: "", date: todayStr(), days: 1, note: "", dailyRate: "" };
@@ -761,7 +737,6 @@ export default function WaterElectricLedger() {
 
   useEffect(() => {
     setOrderForm((f) => ({ ...f, categoryId: f.categoryId || categories[0]?.id || "" }));
-    setUsageForm((f) => ({ ...f, categoryId: f.categoryId || categories[0]?.id || "" }));
   }, [categories]);
 
   const submitOrder = (e) => {
@@ -789,34 +764,35 @@ export default function WaterElectricLedger() {
     persistOrders(next);
   };
 
-  const submitUsage = (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增領用紀錄"); return; }
-    if (!usageForm.itemName.trim() || !usageForm.quantity) {
-      showToast("請填寫「品項名稱」與「數量」後再新增領用紀錄");
-      return;
-    }
-    const rec = { id: uid(), ...usageForm, siteId: currentSiteId };
-    const next = [rec, ...usages];
-    setUsages(next);
-    persistUsages(next);
-    setUsageForm({ ...emptyUsage, categoryId: usageForm.categoryId });
-  };
   const deleteUsage = (id) => {
     const next = usages.filter((u) => u.id !== id);
     setUsages(next);
     persistUsages(next);
   };
-  const consumeFromInventory = ({ date, categoryId, itemName, quantity, unit, location }) => {
-    const rec = { id: uid(), date, categoryId, itemName, quantity, unit, location: location || "", type: "out", siteId: currentSiteId };
+  const consumeFromInventory = ({ date, categoryId, itemName, quantity, unit, location, type }) => {
+    const rec = { id: uid(), date, categoryId, itemName, quantity, unit, location: location || "", type: type === "return" ? "return" : "out", siteId: currentSiteId };
     const next = [rec, ...usages];
     setUsages(next);
     persistUsages(next);
   };
-  const updateUsage = (id, patch) => {
-    const next = usages.map((u) => (u.id === id ? { ...u, ...patch } : u));
+  // 校正庫存負數：消貨紀錄的類別/品項與叫貨對不上時，併入正確的品項，或直接刪除。
+  const inUsageScope = (u) => isAllSites || u.siteId === currentSiteId;
+  const reassignUsages = (fromCategoryId, itemName, toCategoryId, toItemName) => {
+    let n = 0;
+    const next = usages.map((u) => {
+      if (inUsageScope(u) && u.categoryId === fromCategoryId && u.itemName === itemName) { n++; return { ...u, categoryId: toCategoryId, itemName: toItemName }; }
+      return u;
+    });
     setUsages(next);
     persistUsages(next);
+    showToast(`已併入「${toItemName}」，共更新 ${n} 筆消貨紀錄`);
+  };
+  const deleteUsagesByKey = (categoryId, itemName) => {
+    const next = usages.filter((u) => !(inUsageScope(u) && u.categoryId === categoryId && u.itemName === itemName));
+    const n = usages.length - next.length;
+    setUsages(next);
+    persistUsages(next);
+    showToast(`已刪除 ${n} 筆消貨紀錄`);
   };
 
   const addCategory = () => {
@@ -1709,7 +1685,6 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<HardHat size={16} />} label="師傅出工" active={tab === "labor"} onClick={() => setTab("labor")} />
             <NavBtn icon={<ClipboardList size={16} />} label="叫貨紀錄" active={tab === "orders"} onClick={() => setTab("orders")} />
             <NavBtn icon={<Camera size={16} />} label="收貨單" active={tab === "receipts"} onClick={() => setTab("receipts")} />
-            <NavBtn icon={<Wrench size={16} />} label="領料使用" active={tab === "usages"} onClick={() => setTab("usages")} />
             <NavBtn icon={<Boxes size={16} />} label="庫存現況" active={tab === "inventory"} onClick={() => setTab("inventory")} />
             <NavBtn icon={<Tags size={16} />} label="品項類別" active={tab === "categories"} onClick={() => setTab("categories")} />
             <NavBtn icon={<Handshake size={16} />} label="發包與領款" active={tab === "contracts"} onClick={() => setTab("contracts")} />
@@ -1772,7 +1747,6 @@ export default function WaterElectricLedger() {
               submitOrder={submitOrder}
               deleteOrder={deleteOrder}
               updateOrder={updateOrder}
-              itemSuggestions={itemSuggestions}
               isAllSites={isAllSites}
               sites={sites}
               setCurrentSiteId={setCurrentSiteId}
@@ -1786,23 +1760,6 @@ export default function WaterElectricLedger() {
               removeSupplier={removeSupplier}
               showToast={showToast}
               confirmScannedOrders={confirmScannedOrders}
-            />
-          )}
-          {tab === "usages" && (
-            <UsagesTab
-              usages={siteUsages}
-              categories={categories}
-              catById={catById}
-              siteById={siteById}
-              usageForm={usageForm}
-              setUsageForm={setUsageForm}
-              submitUsage={submitUsage}
-              deleteUsage={deleteUsage}
-              updateUsage={updateUsage}
-              itemSuggestions={itemSuggestions}
-              isAllSites={isAllSites}
-              sites={sites}
-              setCurrentSiteId={setCurrentSiteId}
             />
           )}
           {tab === "receipts" && (
@@ -1831,6 +1788,8 @@ export default function WaterElectricLedger() {
               sites={sites}
               setCurrentSiteId={setCurrentSiteId}
               consumeFromInventory={consumeFromInventory}
+              reassignUsages={reassignUsages}
+              deleteUsagesByKey={deleteUsagesByKey}
               deleteUsage={deleteUsage}
               showToast={showToast}
             />
@@ -2116,6 +2075,78 @@ function ExportBar({ onExcel, onWord, label }) {
   );
 }
 
+// 全部案場總結算：收入、各項支出、總淨損益、投入成本與資金結餘
+function SettlementCard({ siteBreakdown }) {
+  const sum = (k) => siteBreakdown.reduce((acc, b) => acc + (b[k] || 0), 0);
+  const T = { collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital"), balance: sum("balance") };
+  const signed = (n) => (n >= 0 ? "+" : "") + fmtMoney(n);
+  const color = (n) => (n >= 0 ? "var(--green)" : "var(--red)");
+  const toRow = (name, b) => ({ 案場: name, 收入: b.collected, 材料: b.material, 人工: b.labor, 發包: b.contract, 其他支出: b.other, 固定資產: b.asset, 總支出: b.total, 淨損益: b.profit, 投入成本: b.capital, 資金結餘: b.balance });
+  const handleExportExcel = () => exportExcel("全部案場總結算", [{ name: "總結算", rows: [...siteBreakdown.map((b) => toRow(b.name, b)), toRow("全部案場合計", T)] }]);
+  const handleExportWord = () => exportWord("全部案場總結算", "全部案場總結算", [{
+    title: "各案場與合計",
+    note: "淨損益 ＝ 收入 － 總支出；資金結餘 ＝ 投入成本 ＋ 收入 － 總支出（投入成本是自己投入的資金，不重複計入總支出）",
+    headers: ["案場", "收入", "材料", "人工", "發包", "其他支出", "固定資產", "總支出", "淨損益", "投入成本", "資金結餘"],
+    rows: [...siteBreakdown.map((b) => [b.name, ...Object.values(toRow(b.name, b)).slice(1).map(fmtMoney)]), ["全部案場合計", ...Object.values(toRow("", T)).slice(1).map(fmtMoney)]],
+  }]);
+  const cell = { padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" };
+  return (
+    <div className="wel-card">
+      <div className="wel-card-title-row">
+        <div className="wel-card-title"><Layers size={14} /> 全部案場總結算</div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+      <div className="wel-labor-summary">
+        <div className="wel-labor-stat"><span>總收入（甲方收款）</span><b style={{ color: "var(--teal)" }}>{fmtMoney(T.collected)}</b></div>
+        <div className="wel-labor-stat"><span>總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(T.total)}</b></div>
+        <div className="wel-labor-stat"><span>總淨損益</span><b style={{ color: color(T.profit) }}>{signed(T.profit)}</b></div>
+        <div className="wel-labor-stat"><span>總投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(T.capital)}</b></div>
+        <div className="wel-labor-stat"><span>資金結餘</span><b style={{ color: color(T.balance) }}>{signed(T.balance)}</b></div>
+      </div>
+      <div style={{ overflowX: "auto", marginTop: 12 }}>
+        <table className="wel-table">
+          <thead>
+            <tr><th>案場</th><th className="right">收入</th><th className="right">材料</th><th className="right">人工</th><th className="right">發包</th><th className="right">其他支出</th><th className="right">固定資產</th><th className="right">總支出</th><th className="right">淨損益</th><th className="right">投入成本</th><th className="right">資金結餘</th></tr>
+          </thead>
+          <tbody>
+            {siteBreakdown.map((b) => (
+              <tr key={b.id}>
+                <td>{b.name}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.collected)}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.material)}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.labor)}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.contract)}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.other)}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.asset)}</td>
+                <td className="mono strong" style={cell}>{fmtMoney(b.total)}</td>
+                <td className="mono strong" style={{ ...cell, color: color(b.profit) }}>{signed(b.profit)}</td>
+                <td className="mono" style={cell}>{fmtMoney(b.capital)}</td>
+                <td className="mono strong" style={{ ...cell, color: color(b.balance) }}>{signed(b.balance)}</td>
+              </tr>
+            ))}
+            <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
+              <td className="strong">全部案場合計</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.collected)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.material)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.labor)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.contract)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.other)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.asset)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.total)}</td>
+              <td className="mono strong" style={{ ...cell, color: color(T.profit) }}>{signed(T.profit)}</td>
+              <td className="mono strong" style={cell}>{fmtMoney(T.capital)}</td>
+              <td className="mono strong" style={{ ...cell, color: color(T.balance) }}>{signed(T.balance)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+        總支出 ＝ 材料 ＋ 人工 ＋ 發包 ＋ 其他支出 ＋ 固定資產；總淨損益 ＝ 收入 － 總支出；資金結餘 ＝ 投入成本 ＋ 收入 － 總支出（投入成本是你投入的資金，不重複算進支出）。
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, monthlyTrend, months, monthFilter, setMonthFilter, inventory, catById, orderCount, laborTotalAllTime, grandTotal, workerCount, isAllSites, siteBreakdown, currentSiteName, contractPaidTotal, contractTotalPrice, clientPaidTotal, profitLoss, openDiscussionCount, siteDiscussionItems }) {
   const lowStock = inventory.filter((i) => i.remaining <= 0 && i.ordered > 0);
   const maxCat = Math.max(1, ...categoryBreakdown.map((d) => d.value));
@@ -2176,6 +2207,8 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
           <b className="mono wel-profit-value">{profitLoss >= 0 ? "+" : ""}{fmtMoney(profitLoss)}</b>
         </div>
       </div>
+
+      {isAllSites && siteBreakdown.length > 0 && <SettlementCard siteBreakdown={siteBreakdown} />}
 
       {isAllSites && siteBreakdown.length > 0 && (
         <div className="wel-card">
@@ -2288,7 +2321,7 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
   );
 }
 
-function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, itemSuggestions, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders }) {
+function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders }) {
   const [scanOpen, setScanOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
@@ -2705,156 +2738,8 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   );
 }
 
-function UsagesTab({ usages, categories, catById, siteById, usageForm, setUsageForm, submitUsage, deleteUsage, updateUsage, itemSuggestions, isAllSites, sites, setCurrentSiteId }) {
-  const [expandedUsageId, setExpandedUsageId] = useState(null);
-  const [editDraft, setEditDraft] = useState(null);
-  const startEditUsage = (u) => {
-    setExpandedUsageId(u.id);
-    setEditDraft({ date: u.date, categoryId: u.categoryId, itemName: u.itemName, quantity: u.quantity, unit: u.unit || "", location: u.location || "", type: u.type || "out" });
-  };
-  const cancelEditUsage = () => { setExpandedUsageId(null); setEditDraft(null); };
-  const saveEditUsage = (id) => {
-    if (!editDraft.itemName.trim() || !editDraft.quantity) return;
-    updateUsage(id, editDraft);
-    setExpandedUsageId(null);
-    setEditDraft(null);
-  };
-  const sortedUsages = useMemo(() => usages.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [usages]);
-  const handleExportExcel = () => exportExcel("領用紀錄", [{
-    name: "領用紀錄",
-    rows: sortedUsages.map((u) => ({ 日期: u.date, 類別: catById[u.categoryId]?.name || "", 品項: u.itemName, 類型: u.type === "return" ? "退回" : "領用", 數量: Number(u.quantity) || 0, 單位: u.unit || "", 工地位置: u.location || "" })),
-  }]);
-  const handleExportWord = () => exportWord("領用紀錄", "領料 / 使用紀錄", [{
-    title: "領料 / 使用紀錄",
-    headers: ["日期", "類別", "品項", "類型", "數量", "單位", "工地位置"],
-    rows: sortedUsages.map((u) => [u.date, catById[u.categoryId]?.name || "", u.itemName, u.type === "return" ? "退回" : "領用", u.quantity, u.unit || "", u.location || ""]),
-  }]);
-  return (
-    <div className="wel-page">
-      <div className="wel-page-head">
-        <div>
-          <div className="wel-eyebrow">工地領用 · SITE USAGE</div>
-          <h1 className="wel-h1">領料 / 使用紀錄</h1>
-        </div>
-        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
-      </div>
-
-      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增領用紀錄" />}
-
-      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
-        <div className="wel-form-grid">
-          <Field label="日期">
-            <input type="date" value={usageForm.date} onChange={(e) => setUsageForm({ ...usageForm, date: e.target.value })} />
-          </Field>
-          <Field label="類別">
-            <select value={usageForm.categoryId} onChange={(e) => setUsageForm({ ...usageForm, categoryId: e.target.value })}>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
-          <Field label="品項名稱">
-            <input list="wel-items2" placeholder="需與叫貨品項一致" value={usageForm.itemName} onChange={(e) => setUsageForm({ ...usageForm, itemName: e.target.value })} />
-            <datalist id="wel-items2">{itemSuggestions.map((s) => <option key={s} value={s} />)}</datalist>
-          </Field>
-          <Field label="類型">
-            <select value={usageForm.type || "out"} onChange={(e) => setUsageForm({ ...usageForm, type: e.target.value })}>
-              <option value="out">領用（出庫）</option>
-              <option value="return">退回（沒用完，還回庫存）</option>
-            </select>
-          </Field>
-          <Field label={usageForm.type === "return" ? "退回數量" : "使用數量"}>
-            <input type="number" step="any" min="0" value={usageForm.quantity} onChange={(e) => setUsageForm({ ...usageForm, quantity: e.target.value })} />
-          </Field>
-          <Field label="單位">
-            <input placeholder="支 / 米 / 個" value={usageForm.unit} onChange={(e) => setUsageForm({ ...usageForm, unit: e.target.value })} />
-          </Field>
-          <Field label="工地 / 用途" wide>
-            <input placeholder="選填，例：3樓衛浴配管" value={usageForm.location} onChange={(e) => setUsageForm({ ...usageForm, location: e.target.value })} />
-          </Field>
-        </div>
-        <button type="button" className="wel-btn-primary" onClick={submitUsage}>
-          <Plus size={15} /> {usageForm.type === "return" ? "新增退回紀錄" : "新增領用紀錄"}
-        </button>
-      </div>
-
-      <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
-        <table className="wel-table">
-          <thead>
-            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>類別</th><th>品項</th><th>類型</th><th className="right">數量</th><th>工地 / 用途</th><th></th></tr>
-          </thead>
-          <tbody>
-            {sortedUsages.length === 0 && (<tr><td colSpan={isAllSites ? 8 : 7}><Empty text="尚未新增任何領用紀錄" /></td></tr>)}
-            {sortedUsages.map((u) => {
-              const isOpen = expandedUsageId === u.id;
-              const isReturn = u.type === "return";
-              return (
-              <React.Fragment key={u.id}>
-              <tr className="wel-row-clickable" onClick={() => (isOpen ? cancelEditUsage() : startEditUsage(u))}>
-                {isAllSites && <td className="muted">{siteById[u.siteId]?.name || "—"}</td>}
-                <td className="mono">{u.date}</td>
-                <td><span className="wel-tag" style={{ borderColor: catById[u.categoryId]?.color }}>{catById[u.categoryId]?.name || "未分類"}</span></td>
-                <td>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                    {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                    {u.itemName}
-                  </span>
-                </td>
-                <td>{isReturn ? <span className="wel-chip-info">退回</span> : <span className="muted">領用</span>}</td>
-                <td className="right mono" style={isReturn ? { color: "var(--green)" } : undefined}>{isReturn ? "+" : ""}{fmtNum(u.quantity)} {u.unit}</td>
-                <td className="muted">{u.location || "—"}</td>
-                <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteUsage(u.id); }}><Trash2 size={14} /></button></td>
-              </tr>
-              {isOpen && editDraft && (
-                <tr onClick={(e) => e.stopPropagation()}>
-                  <td colSpan={isAllSites ? 8 : 7} style={{ padding: 0 }}>
-                    <div className="wel-timeline-wrap">
-                      <div className="wel-form-grid">
-                        <Field label="日期">
-                          <input type="date" value={editDraft.date} onChange={(e) => setEditDraft({ ...editDraft, date: e.target.value })} />
-                        </Field>
-                        <Field label="類別">
-                          <select value={editDraft.categoryId} onChange={(e) => setEditDraft({ ...editDraft, categoryId: e.target.value })}>
-                            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                          </select>
-                        </Field>
-                        <Field label="品項名稱">
-                          <input list="wel-items2" value={editDraft.itemName} onChange={(e) => setEditDraft({ ...editDraft, itemName: e.target.value })} />
-                        </Field>
-                        <Field label="類型">
-                          <select value={editDraft.type || "out"} onChange={(e) => setEditDraft({ ...editDraft, type: e.target.value })}>
-                            <option value="out">領用（出庫）</option>
-                            <option value="return">退回（沒用完，還回庫存）</option>
-                          </select>
-                        </Field>
-                        <Field label={editDraft.type === "return" ? "退回數量" : "使用數量"}>
-                          <input type="number" step="any" min="0" value={editDraft.quantity} onChange={(e) => setEditDraft({ ...editDraft, quantity: e.target.value })} />
-                        </Field>
-                        <Field label="單位">
-                          <input value={editDraft.unit} onChange={(e) => setEditDraft({ ...editDraft, unit: e.target.value })} />
-                        </Field>
-                        <Field label="工地 / 用途" wide>
-                          <input value={editDraft.location} onChange={(e) => setEditDraft({ ...editDraft, location: e.target.value })} />
-                        </Field>
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button type="button" className="wel-btn-primary" onClick={() => saveEditUsage(u.id)}>儲存修改</button>
-                        <button type="button" className="wel-btn-ghost" onClick={cancelEditUsage}>取消</button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              )}
-              </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function InventoryTab({ inventory, catById, categories, orders, usages, siteById, isAllSites, sites, setCurrentSiteId, consumeFromInventory, deleteUsage, showToast }) {
-  const [form, setForm] = useState({ date: todayStr(), categoryId: categories[0]?.id || "", itemKey: "", quantity: "", location: "" });
+function InventoryTab({ inventory, catById, categories, orders, usages, siteById, isAllSites, sites, setCurrentSiteId, consumeFromInventory, reassignUsages, deleteUsagesByKey, deleteUsage, showToast }) {
+  const [form, setForm] = useState({ date: todayStr(), categoryId: categories[0]?.id || "", itemKey: "", quantity: "", location: "", type: "out" });
   const [filterCat, setFilterCat] = useState("all");
   const [openMonths, setOpenMonths] = useState({});
 
@@ -2866,12 +2751,31 @@ function InventoryTab({ inventory, catById, categories, orders, usages, siteById
   const submitConsume = () => {
     if (isAllSites) { showToast("請先在左側選擇一個案場，才能消貨"); return; }
     if (!selectedItem) { showToast("請先選擇「種類」與「品項」"); return; }
+    const isReturn = form.type === "return";
     const qty = Number(form.quantity);
-    if (!qty || qty <= 0) { showToast("請填寫要消貨的「數量」"); return; }
-    if (qty > selectedItem.remaining) { showToast(`庫存不足：「${selectedItem.itemName}」剩餘 ${fmtNum(selectedItem.remaining)} ${selectedItem.unit || ""}`); return; }
-    consumeFromInventory({ date: form.date, categoryId: selectedItem.categoryId, itemName: selectedItem.itemName, quantity: qty, unit: selectedItem.unit || "", location: form.location });
-    setForm((f) => ({ ...f, itemKey: f.itemKey, quantity: "", location: "" }));
-    showToast(`已消貨：${selectedItem.itemName} ${fmtNum(qty)} ${selectedItem.unit || ""}`);
+    if (!qty || qty <= 0) { showToast(isReturn ? "請填寫要退回的「數量」" : "請填寫要消貨的「數量」"); return; }
+    if (!isReturn && qty > selectedItem.remaining) { showToast(`庫存不足：「${selectedItem.itemName}」剩餘 ${fmtNum(selectedItem.remaining)} ${selectedItem.unit || ""}`); return; }
+    consumeFromInventory({ date: form.date, categoryId: selectedItem.categoryId, itemName: selectedItem.itemName, quantity: qty, unit: selectedItem.unit || "", location: form.location, type: form.type });
+    setForm((f) => ({ ...f, quantity: "", location: "" }));
+    showToast(`${isReturn ? "已退回入庫" : "已消貨"}：${selectedItem.itemName} ${fmtNum(qty)} ${selectedItem.unit || ""}`);
+  };
+
+  // 負數且完全沒有對應叫貨的列：多半是消貨紀錄的類別/品項和叫貨對不上，提供「併入」或「刪除」來校正
+  const fixTargets = (row) => inventory
+    .filter((x) => x.key !== row.key && x.ordered > 0)
+    .sort((a, b) => (b.itemName === row.itemName) - (a.itemName === row.itemName));
+  const usageCountOf = (row) => usages.filter((u) => u.categoryId === row.categoryId && u.itemName === row.itemName).length;
+  const doFix = (row, value) => {
+    if (!value) return;
+    const where = `${catById[row.categoryId]?.name || "未分類"}・${row.itemName}`;
+    if (value === "delete") {
+      if (window.confirm(`確定要刪除「${where}」的 ${usageCountOf(row)} 筆消貨紀錄嗎？刪除後無法復原。`)) deleteUsagesByKey(row.categoryId, row.itemName);
+      return;
+    }
+    const target = inventory.find((x) => x.key === value);
+    if (target && window.confirm(`把「${where}」的 ${usageCountOf(row)} 筆消貨紀錄，併入「${catById[target.categoryId]?.name || "未分類"}・${target.itemName}」嗎？`)) {
+      reassignUsages(row.categoryId, row.itemName, target.categoryId, target.itemName);
+    }
   };
 
   const movements = useMemo(() => {
@@ -2894,7 +2798,7 @@ function InventoryTab({ inventory, catById, categories, orders, usages, siteById
       {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="消貨" />}
 
       <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
-        <div className="wel-card-title"><Boxes size={14} /> 消貨（從庫存領出使用）</div>
+        <div className="wel-card-title"><Boxes size={14} /> 消貨 / 退回（依剩餘庫存領出使用）</div>
         <div className="wel-form-grid">
           <Field label="日期">
             <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
@@ -2912,15 +2816,21 @@ function InventoryTab({ inventory, catById, categories, orders, usages, siteById
               ))}
             </select>
           </Field>
-          <Field label={"消貨數量" + (selectedItem ? `（${selectedItem.unit || "單位"}）` : "")}>
+          <Field label="類型">
+            <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+              <option value="out">消貨（領出使用）</option>
+              <option value="return">退回（沒用完，還回庫存）</option>
+            </select>
+          </Field>
+          <Field label={(form.type === "return" ? "退回數量" : "消貨數量") + (selectedItem ? `（${selectedItem.unit || "單位"}）` : "")}>
             <input type="number" step="any" min="0" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
           </Field>
           <Field label="用途 / 備註" wide>
             <input placeholder="選填，例：3樓衛浴配管" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
           </Field>
         </div>
-        <button type="button" className="wel-btn-primary" onClick={submitConsume}><Plus size={15} /> 消貨</button>
-        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>消貨會自動新增一筆「領料使用」紀錄並扣減剩餘庫存；用不完的可到「領料使用」新增「退回」加回庫存。</div>
+        <button type="button" className="wel-btn-primary" onClick={submitConsume}><Plus size={15} /> {form.type === "return" ? "退回入庫" : "消貨"}</button>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>消貨會扣減剩餘庫存並記在下方「庫存異動紀錄」；用不完的選「退回」加回庫存。記錯的可在異動紀錄按垃圾桶刪除。</div>
       </div>
 
       <div className="wel-card-title-row" style={{ marginTop: 14 }}>
@@ -2935,10 +2845,10 @@ function InventoryTab({ inventory, catById, categories, orders, usages, siteById
       <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
         <table className="wel-table">
           <thead>
-            <tr><th>類別</th><th>品項</th><th className="right">已叫貨</th><th className="right">已使用</th><th className="right">剩餘庫存</th><th className="right">平均單價</th><th className="right">庫存價值</th></tr>
+            <tr><th>類別</th><th>品項</th><th className="right">已叫貨</th><th className="right">已使用</th><th className="right">剩餘庫存</th><th className="right">平均單價</th><th className="right">庫存價值</th><th>校正</th></tr>
           </thead>
           <tbody>
-            {visibleInventory.length === 0 && (<tr><td colSpan={7}><Empty text="尚無庫存資料，請先新增叫貨紀錄" /></td></tr>)}
+            {visibleInventory.length === 0 && (<tr><td colSpan={8}><Empty text="尚無庫存資料，請先新增叫貨紀錄" /></td></tr>)}
             {visibleInventory.map((i) => (
               <tr key={i.key} className="wel-row-clickable" onClick={() => pickRow(i)}>
                 <td><span className="wel-tag" style={{ borderColor: catById[i.categoryId]?.color }}>{catById[i.categoryId]?.name || "未分類"}</span></td>
@@ -2948,6 +2858,16 @@ function InventoryTab({ inventory, catById, categories, orders, usages, siteById
                 <td className={"right mono strong" + (i.remaining <= 0 ? " wel-low" : "")}>{fmtNum(i.remaining)} {i.unit}</td>
                 <td className="right mono muted">{fmtMoney(i.avgPrice)}</td>
                 <td className="right mono">{fmtMoney(i.value)}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {i.remaining < 0 && i.ordered === 0 && (
+                    <select className="wel-scan-input" style={{ maxWidth: 170 }} value="" onChange={(e) => doFix(i, e.target.value)} title="這筆消貨沒有對應的叫貨，可併入正確品項或刪除">
+                      <option value="">校正負數…</option>
+                      {fixTargets(i).map((t) => <option key={t.key} value={t.key}>併入「{catById[t.categoryId]?.name || "未分類"}・{t.itemName}」</option>)}
+                      <option value="delete">刪除這些消貨紀錄</option>
+                    </select>
+                  )}
+                  {i.remaining < 0 && i.ordered > 0 && <span className="muted" style={{ fontSize: 11 }}>叫貨數量不足，請補登叫貨</span>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -6638,6 +6558,10 @@ function SiteLandingPage({
     [siteBreakdown]
   );
   const allSitesProfit = allSitesIncome - allSitesTotal;
+  const allSitesCapital = useMemo(
+    () => siteBreakdown.reduce((s, b) => s + b.capital, 0),
+    [siteBreakdown]
+  );
   const allSitesBalance = useMemo(
     () => siteBreakdown.reduce((s, b) => s + b.balance, 0),
     [siteBreakdown]
@@ -6679,11 +6603,12 @@ function SiteLandingPage({
               <span className="wel-site-name">全部案場總覽</span>
             </div>
             <div className="wel-site-address muted">查看所有案場的加總與比較</div>
-            <div className="wel-site-stats">
+            <div className="wel-site-stats" style={{ flexWrap: "wrap" }}>
               <div><span>案場數</span><b>{sites.length}</b></div>
               <div><span>合計收入</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesIncome)}</b></div>
               <div><span>合計總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(allSitesTotal)}</b></div>
-              <div><span>{allSitesProfit >= 0 ? "合計毛利" : "合計虧損"}</span><b style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</b></div>
+              <div><span>總淨損益</span><b style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</b></div>
+              <div><span>合計投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesCapital)}</b></div>
               <div><span>合計資金結餘</span><b style={{ color: allSitesBalance >= 0 ? "var(--green)" : "var(--red)" }}>{fmtMoney(allSitesBalance)}</b></div>
             </div>
           </div>
