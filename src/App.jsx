@@ -717,7 +717,7 @@ export default function WaterElectricLedger() {
     const o = map.__orphan;
     if (o && !(o.material || o.labor || o.contract || o.collected || o.capital || o.other || o.asset)) delete map.__orphan;
     return Object.values(map)
-      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset), balance: s.capital + s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
+      .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
       .sort((a, b) => b.total - a.total);
   }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets]);
 
@@ -2171,18 +2171,18 @@ function ExportBar({ onExcel, onWord, label }) {
   );
 }
 
-// 全部案場總結算：收入、各項支出、總淨損益、投入成本與資金結餘
+// 全部案場總結算：收入、各項支出、總淨損益；投入成本只做參考（已在收入中回收，不計入損益）
 function SettlementCard({ siteBreakdown }) {
   const sum = (k) => siteBreakdown.reduce((acc, b) => acc + (b[k] || 0), 0);
-  const T = { collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital"), balance: sum("balance") };
+  const T = { collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital") };
   const signed = (n) => (n >= 0 ? "+" : "") + fmtMoney(n);
   const color = (n) => (n >= 0 ? "var(--green)" : "var(--red)");
-  const toRow = (name, b) => ({ 案場: name, 收入: b.collected, 材料: b.material, 人工: b.labor, 發包: b.contract, 其他支出: b.other, 固定資產: b.asset, 總支出: b.total, 淨損益: b.profit, 投入成本: b.capital, 資金結餘: b.balance });
+  const toRow = (name, b) => ({ 案場: name, 收入: b.collected, 材料: b.material, 人工: b.labor, 發包: b.contract, 其他支出: b.other, 固定資產: b.asset, 總支出: b.total, 淨損益: b.profit, "投入成本（參考）": b.capital });
   const handleExportExcel = () => exportExcel("全部案場總結算", [{ name: "總結算", rows: [...siteBreakdown.map((b) => toRow(b.name, b)), toRow("全部案場合計", T)] }]);
   const handleExportWord = () => exportWord("全部案場總結算", "全部案場總結算", [{
     title: "各案場與合計",
-    note: "淨損益 ＝ 收入 － 總支出；資金結餘 ＝ 投入成本 ＋ 收入 － 總支出（投入成本是自己投入的資金，不重複計入總支出）",
-    headers: ["案場", "收入", "材料", "人工", "發包", "其他支出", "固定資產", "總支出", "淨損益", "投入成本", "資金結餘"],
+    note: "淨損益 ＝ 收入 － 總支出。投入成本已在收入中回收，只列出供參考，不計入損益。",
+    headers: ["案場", "收入", "材料", "人工", "發包", "其他支出", "固定資產", "總支出", "淨損益", "投入成本（參考）"],
     rows: [...siteBreakdown.map((b) => [b.name, ...Object.values(toRow(b.name, b)).slice(1).map(fmtMoney)]), ["全部案場合計", ...Object.values(toRow("", T)).slice(1).map(fmtMoney)]],
   }]);
   const cell = { padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" };
@@ -2197,12 +2197,11 @@ function SettlementCard({ siteBreakdown }) {
         <div className="wel-labor-stat"><span>總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(T.total)}</b></div>
         <div className="wel-labor-stat"><span>總淨損益</span><b style={{ color: color(T.profit) }}>{signed(T.profit)}</b></div>
         <div className="wel-labor-stat"><span>總投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(T.capital)}</b></div>
-        <div className="wel-labor-stat"><span>資金結餘</span><b style={{ color: color(T.balance) }}>{signed(T.balance)}</b></div>
       </div>
       <div style={{ overflowX: "auto", marginTop: 12 }}>
         <table className="wel-table">
           <thead>
-            <tr><th>案場</th><th className="right">收入</th><th className="right">材料</th><th className="right">人工</th><th className="right">發包</th><th className="right">其他支出</th><th className="right">固定資產</th><th className="right">總支出</th><th className="right">淨損益</th><th className="right">投入成本</th><th className="right">資金結餘</th></tr>
+            <tr><th>案場</th><th className="right">收入</th><th className="right">材料</th><th className="right">人工</th><th className="right">發包</th><th className="right">其他支出</th><th className="right">固定資產</th><th className="right">總支出</th><th className="right">淨損益</th><th className="right">投入成本（參考）</th></tr>
           </thead>
           <tbody>
             {siteBreakdown.map((b) => (
@@ -2217,7 +2216,6 @@ function SettlementCard({ siteBreakdown }) {
                 <td className="mono strong" style={cell}>{fmtMoney(b.total)}</td>
                 <td className="mono strong" style={{ ...cell, color: color(b.profit) }}>{signed(b.profit)}</td>
                 <td className="mono" style={cell}>{fmtMoney(b.capital)}</td>
-                <td className="mono strong" style={{ ...cell, color: color(b.balance) }}>{signed(b.balance)}</td>
               </tr>
             ))}
             <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
@@ -2231,13 +2229,12 @@ function SettlementCard({ siteBreakdown }) {
               <td className="mono strong" style={cell}>{fmtMoney(T.total)}</td>
               <td className="mono strong" style={{ ...cell, color: color(T.profit) }}>{signed(T.profit)}</td>
               <td className="mono strong" style={cell}>{fmtMoney(T.capital)}</td>
-              <td className="mono strong" style={{ ...cell, color: color(T.balance) }}>{signed(T.balance)}</td>
             </tr>
           </tbody>
         </table>
       </div>
       <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
-        總支出 ＝ 材料 ＋ 人工 ＋ 發包 ＋ 其他支出 ＋ 固定資產；總淨損益 ＝ 收入 － 總支出；資金結餘 ＝ 投入成本 ＋ 收入 － 總支出（投入成本是你投入的資金，不重複算進支出）。
+        總支出 ＝ 材料 ＋ 人工 ＋ 發包 ＋ 其他支出 ＋ 固定資產；總淨損益 ＝ 收入 － 總支出。投入成本已在收入中回收，只列出供參考，不計入損益。
       </div>
     </div>
   );
@@ -6316,7 +6313,7 @@ function CapitalTab({
       <div className="wel-meter-card">
         <div className="wel-meter-label"><PiggyBank size={14} /> 累計投入成本</div>
         <div className="wel-meter-sub" style={{ marginTop: 0 }}>
-          <span>你投入的資金，不重複計入總支出（花出去的錢已在材料／人工／發包等項目算過）；資金結餘 ＝ 投入成本 ＋ 甲方收款 － 總支出</span>
+          <span>你投入的資金，已在收入中回收，所以只記錄、供參考，不計入總支出與損益</span>
         </div>
         <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--teal)" }}>{fmtMoney(capitalTotal)}</div>
       </div>
@@ -6901,10 +6898,6 @@ function SiteLandingPage({
     () => siteBreakdown.reduce((s, b) => s + b.capital, 0),
     [siteBreakdown]
   );
-  const allSitesBalance = useMemo(
-    () => siteBreakdown.reduce((s, b) => s + b.balance, 0),
-    [siteBreakdown]
-  );
 
   const startEdit = (e, s) => { e.stopPropagation(); setEditingId(s.id); setEditDraft({ name: s.name, address: s.address || "" }); };
   const saveEdit = (e) => { e.stopPropagation(); renameSite(editingId, editDraft.name.trim() || "未命名案場", editDraft.address.trim()); setEditingId(null); };
@@ -6951,13 +6944,12 @@ function SiteLandingPage({
               <div><span>合計總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(allSitesTotal)}</b></div>
               <div><span>總淨損益</span><b style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</b></div>
               <div><span>合計投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesCapital)}</b></div>
-              <div><span>合計資金結餘</span><b style={{ color: allSitesBalance >= 0 ? "var(--green)" : "var(--red)" }}>{fmtMoney(allSitesBalance)}</b></div>
             </div>
           </div>
         )}
 
         {sites.map((s) => {
-          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0, other: 0, asset: 0, balance: 0 };
+          const stat = statsById[s.id] || { material: 0, labor: 0, contract: 0, total: 0, collected: 0, profit: 0, capital: 0, other: 0, asset: 0 };
           const isEditing = editingId === s.id;
           return (
             <div
@@ -6995,7 +6987,6 @@ function SiteLandingPage({
                   </div>
                   <div className="wel-site-stats">
                     <div><span>投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(stat.capital)}</b></div>
-                    <div><span>資金結餘</span><b style={{ color: stat.balance >= 0 ? "var(--green)" : "var(--red)" }}>{fmtMoney(stat.balance)}</b></div>
                     <div><span>其他支出</span><b>{fmtMoney(stat.other)}</b></div>
                     <div><span>固定資產</span><b>{fmtMoney(stat.asset)}</b></div>
                   </div>
