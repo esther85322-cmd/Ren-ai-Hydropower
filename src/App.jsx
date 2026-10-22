@@ -166,9 +166,11 @@ export default function WaterElectricLedger() {
   const [sites, setSites] = useState([DEFAULT_SITE]);
   const [currentSiteId, setCurrentSiteId] = useState(DEFAULT_SITE.id);
   const [view, setView] = useState("sites"); // "sites" (landing page) | "workspace"
-  const enterSite = useCallback((siteId) => {
+  const [pendingDrill, setPendingDrill] = useState(null);
+  const enterSite = useCallback((siteId, drill) => {
     setCurrentSiteId(siteId);
     setTab(siteId === "all" ? "dashboard" : "labor");
+    setPendingDrill(drill || null);
     setView("workspace");
   }, []);
   const returnToSites = useCallback(() => setView("sites"), []);
@@ -1807,6 +1809,11 @@ export default function WaterElectricLedger() {
               profitLoss={profitLoss}
               openDiscussionCount={openDiscussionCount}
               siteDiscussionItems={siteDiscussionItems}
+              drillData={isAllSites ? {
+                sites, siteById, catById, workerById, workLogRate, contracts, orders, workLogs, payments, otherExpenses, fixedAssets, clientPayments, capitalContributions,
+                goTo: (siteKey, t) => { if (siteKey !== "all" && siteKey !== "__orphan") setCurrentSiteId(siteKey); setTab(t); },
+                initial: pendingDrill, clearInitial: () => setPendingDrill(null),
+              } : undefined}
             />
           )}
           {tab === "orders" && (
@@ -2171,12 +2178,27 @@ function ExportBar({ onExcel, onWord, label }) {
   );
 }
 
-// 全部案場總結算：收入、各項支出、總淨損益；投入成本只做參考（已在收入中回收，不計入損益）
-function SettlementCard({ siteBreakdown }) {
+const DRILL_KINDS = {
+  collected: { label: "收入（甲方收款）", tab: "client", tabName: "甲方收款" },
+  material: { label: "材料（叫貨）", tab: "orders", tabName: "叫貨紀錄" },
+  labor: { label: "人工（出工）", tab: "labor", tabName: "師傅出工" },
+  contract: { label: "發包（領款）", tab: "contracts", tabName: "發包與領款" },
+  other: { label: "其他支出", tab: "otherexpenses", tabName: "其他支出" },
+  asset: { label: "固定資產", tab: "assets", tabName: "固定資產" },
+  capital: { label: "投入成本（參考）", tab: "capital", tabName: "投入成本" },
+};
+const EXPENSE_KINDS = ["material", "labor", "contract", "other", "asset"];
+
+// 全部案場總結算：收入、各項支出、總淨損益；投入成本只做參考（已在收入中回收，不計入損益）。
+// 每個數字都能點開，看到是哪些紀錄加起來的。
+function SettlementCard({ siteBreakdown, drillData }) {
   const sum = (k) => siteBreakdown.reduce((acc, b) => acc + (b[k] || 0), 0);
-  const T = { collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital") };
+  const T = { id: "all", collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital") };
   const signed = (n) => (n >= 0 ? "+" : "") + fmtMoney(n);
   const color = (n) => (n >= 0 ? "var(--green)" : "var(--red)");
+  const [drill, setDrill] = useState(drillData && drillData.initial ? drillData.initial : null);
+  useEffect(() => { if (drillData && drillData.initial) drillData.clearInitial(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toRow = (name, b) => ({ 案場: name, 收入: b.collected, 材料: b.material, 人工: b.labor, 發包: b.contract, 其他支出: b.other, 固定資產: b.asset, 總支出: b.total, 淨損益: b.profit, "投入成本（參考）": b.capital });
   const handleExportExcel = () => exportExcel("全部案場總結算", [{ name: "總結算", rows: [...siteBreakdown.map((b) => toRow(b.name, b)), toRow("全部案場合計", T)] }]);
   const handleExportWord = () => exportWord("全部案場總結算", "全部案場總結算", [{
@@ -2185,20 +2207,152 @@ function SettlementCard({ siteBreakdown }) {
     headers: ["案場", "收入", "材料", "人工", "發包", "其他支出", "固定資產", "總支出", "淨損益", "投入成本（參考）"],
     rows: [...siteBreakdown.map((b) => [b.name, ...Object.values(toRow(b.name, b)).slice(1).map(fmtMoney)]), ["全部案場合計", ...Object.values(toRow("", T)).slice(1).map(fmtMoney)]],
   }]);
+
   const cell = { padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" };
+  const isActive = (siteKey, kind) => drill && drill.siteKey === siteKey && drill.kind === kind;
+  const num = (siteKey, kind, text, tone) => (
+    <button type="button" className={"wel-num-link" + (isActive(siteKey, kind) ? " active" : "")} style={tone ? { color: tone } : undefined} onClick={() => setDrill({ siteKey, kind })} title="點一下看明細">{text}</button>
+  );
+
+  // ---- drill-down panel ----
+  const d = drillData;
+  const siteIds = d ? new Set(d.sites.map((s) => s.id)) : new Set();
+  const siteName = (key) => (key === "all" ? "全部案場合計" : key === "__orphan" ? "（已刪除案場的紀錄）" : (d && d.siteById[key]?.name) || "");
+  const inScope = (x, key) => (key === "all" ? true : key === "__orphan" ? !siteIds.has(x.siteId) : x.siteId === key);
+  const recordSite = (x) => (d && d.siteById[x.siteId]?.name) || "（已刪除案場）";
+
+  const buildRecords = (kind, key) => {
+    const contractById = {};
+    d.contracts.forEach((c) => (contractById[c.id] = c));
+    const defs = {
+      material: { headers: ["類別", "品項", "數量 × 單價", "廠商"], list: d.orders, row: (o) => ({ cells: [d.catById[o.categoryId]?.name || "未分類", o.itemName, `${fmtNum(o.quantity)} ${o.unit || ""} × ${fmtMoney(o.unitPrice)}`, o.supplier || ""], amount: Number(o.amount) || 0 }) },
+      labor: { headers: ["師傅", "天數 × 日薪", "備註"], list: d.workLogs, row: (l) => ({ cells: [d.workerById[l.workerId]?.name || "已刪除師傅", `${fmtNum(l.days)} 天 × ${fmtMoney(d.workLogRate(l))}`, l.note || ""], amount: (Number(l.days) || 0) * d.workLogRate(l) }) },
+      contract: { headers: ["發包項目", "廠商", "備註"], list: d.payments, row: (p) => ({ cells: [contractById[p.contractId]?.name || "已刪除項目", contractById[p.contractId]?.contractor || "", p.note || ""], amount: Number(p.amount) || 0 }) },
+      other: { headers: ["項目", "廠商", "備註"], list: d.otherExpenses, row: (e) => ({ cells: [e.itemName, e.supplier || "", e.note || ""], amount: Number(e.amount) || 0 }) },
+      asset: { headers: ["品名", "數量 × 單價", "發票"], list: d.fixedAssets, row: (f) => ({ cells: [f.name, `${fmtNum(f.quantity)} × ${fmtMoney(f.amount)}`, f.hasInvoice ? "有發票" : "無發票"], amount: (Number(f.amount) || 0) * (Number(f.quantity) || 1) }) },
+      collected: { headers: ["請款項目", "備註"], list: d.clientPayments, row: (p) => ({ cells: [p.item || "", p.note || ""], amount: Number(p.amount) || 0 }) },
+      capital: { headers: ["備註"], list: d.capitalContributions, row: (c) => ({ cells: [c.note || ""], amount: Number(c.amount) || 0 }) },
+    };
+    const def = defs[kind];
+    const rows = def.list.filter((x) => inScope(x, key)).map((x) => ({ id: x.id, date: x.date || "", site: recordSite(x), ...def.row(x) })).sort((a, b) => (a.date < b.date ? 1 : -1));
+    return { headers: def.headers, rows, total: rows.reduce((s, r) => s + r.amount, 0) };
+  };
+
+  const panelBox = { marginTop: 14, padding: 14, border: "1px solid var(--teal)", borderRadius: 10, background: "rgba(74,144,164,0.06)" };
+  const renderDrill = () => {
+    if (!drill || !d) return null;
+    const { siteKey, kind } = drill;
+    const b = siteKey === "all" ? T : siteBreakdown.find((x) => x.id === siteKey);
+    if (!b) return null;
+    const title = (text) => (
+      <div className="wel-card-title-row" style={{ marginBottom: 8 }}>
+        <div className="wel-card-title"><ScanLine size={14} /> {siteName(siteKey)} · {text}</div>
+        <button type="button" className="wel-btn-ghost" onClick={() => setDrill(null)}>關閉明細</button>
+      </div>
+    );
+    if (kind === "total") {
+      return (
+        <div style={panelBox}>
+          {title("總支出由哪些項目組成")}
+          <table className="wel-table">
+            <thead><tr><th>項目</th><th className="right">金額</th><th className="right">佔總支出</th></tr></thead>
+            <tbody>
+              {EXPENSE_KINDS.map((k) => (
+                <tr key={k}>
+                  <td>{DRILL_KINDS[k].label}</td>
+                  <td className="mono" style={cell}>{num(siteKey, k, fmtMoney(b[k]))}</td>
+                  <td className="mono muted" style={cell}>{b.total ? ((b[k] / b.total) * 100).toFixed(1) + "%" : "—"}</td>
+                </tr>
+              ))}
+              <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
+                <td className="strong">總支出</td><td className="mono strong" style={cell}>{fmtMoney(b.total)}</td><td className="mono muted" style={cell}>100%</td>
+              </tr>
+            </tbody>
+          </table>
+          <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>點上面任一金額，可以再往下看是哪幾筆紀錄。</div>
+        </div>
+      );
+    }
+    if (kind === "profit") {
+      return (
+        <div style={panelBox}>
+          {title("淨損益怎麼算出來的")}
+          <table className="wel-table">
+            <tbody>
+              <tr><td>收入（甲方收款）</td><td className="mono" style={cell}>{num(siteKey, "collected", fmtMoney(b.collected))}</td></tr>
+              <tr><td>減：總支出</td><td className="mono" style={cell}>{num(siteKey, "total", fmtMoney(b.total))}</td></tr>
+              <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
+                <td className="strong">淨損益（{b.profit >= 0 ? "毛利" : "虧損"}）</td><td className="mono strong" style={{ ...cell, color: color(b.profit) }}>{signed(b.profit)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div className="muted" style={{ fontSize: 11.5, marginTop: 6 }}>投入成本已在收入中回收，不計入損益。點上面的金額可以再往下追。</div>
+        </div>
+      );
+    }
+    const info = DRILL_KINDS[kind];
+    const rec = buildRecords(kind, siteKey);
+    const matches = Math.abs(rec.total - (b[kind] || 0)) < 1;
+    return (
+      <div style={panelBox}>
+        {title(`${info.label}：${rec.rows.length} 筆，合計 ${fmtMoney(rec.total)}`)}
+        <div style={{ maxHeight: 380, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+          <table className="wel-table">
+            <thead><tr><th>日期</th><th>案場</th>{rec.headers.map((h) => <th key={h}>{h}</th>)}<th className="right">金額</th></tr></thead>
+            <tbody>
+              {rec.rows.length === 0 && <tr><td colSpan={rec.headers.length + 3}><Empty text="沒有這類紀錄" /></td></tr>}
+              {rec.rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono">{r.date}</td>
+                  <td className="muted">{r.site}</td>
+                  {r.cells.map((c, i) => <td key={i}>{c || "—"}</td>)}
+                  <td className="mono strong" style={cell}>{fmtMoney(r.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+          <span className="muted" style={{ fontSize: 12 }}>{matches ? "✓ 這些紀錄加起來，和上面表格的數字一致" : `⚠ 與表格數字不同（表格 ${fmtMoney(b[kind] || 0)}），請回報給我檢查`}</span>
+          <button type="button" className="wel-btn-ghost" onClick={() => d.goTo(siteKey, info.tab)}>到「{info.tabName}」查看／修改這些紀錄 →</button>
+        </div>
+      </div>
+    );
+  };
+
+  const tile = (label, value, tone, siteKey, kind) => (
+    <button type="button" className="wel-labor-stat wel-stat-btn" onClick={() => setDrill({ siteKey, kind })} title="點一下看明細">
+      <span>{label}</span>
+      <b style={{ color: tone }}>{value}</b>
+    </button>
+  );
+  const rowCells = (key, b, strong) => (
+    <>
+      <td className="mono" style={cell}>{num(key, "collected", fmtMoney(b.collected))}</td>
+      <td className="mono" style={cell}>{num(key, "material", fmtMoney(b.material))}</td>
+      <td className="mono" style={cell}>{num(key, "labor", fmtMoney(b.labor))}</td>
+      <td className="mono" style={cell}>{num(key, "contract", fmtMoney(b.contract))}</td>
+      <td className="mono" style={cell}>{num(key, "other", fmtMoney(b.other))}</td>
+      <td className="mono" style={cell}>{num(key, "asset", fmtMoney(b.asset))}</td>
+      <td className="mono strong" style={cell}>{num(key, "total", fmtMoney(b.total))}</td>
+      <td className="mono strong" style={cell}>{num(key, "profit", signed(b.profit), color(b.profit))}</td>
+      <td className="mono" style={cell}>{num(key, "capital", fmtMoney(b.capital))}</td>
+    </>
+  );
   return (
     <div className="wel-card">
       <div className="wel-card-title-row">
         <div className="wel-card-title"><Layers size={14} /> 全部案場總結算</div>
         <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
       </div>
-      <div className="wel-labor-summary">
-        <div className="wel-labor-stat"><span>總收入（甲方收款）</span><b style={{ color: "var(--teal)" }}>{fmtMoney(T.collected)}</b></div>
-        <div className="wel-labor-stat"><span>總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(T.total)}</b></div>
-        <div className="wel-labor-stat"><span>總淨損益</span><b style={{ color: color(T.profit) }}>{signed(T.profit)}</b></div>
-        <div className="wel-labor-stat"><span>總投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(T.capital)}</b></div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>點任何一個數字，就能看到它是哪些紀錄加起來的，也可以直接跳到那一頁修改。</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+        {tile("總收入（甲方收款）", fmtMoney(T.collected), "var(--teal)", "all", "collected")}
+        {tile("總支出", fmtMoney(T.total), "var(--amber)", "all", "total")}
+        {tile("總淨損益（收入 － 總支出）", signed(T.profit), color(T.profit), "all", "profit")}
+        {tile("總投入成本（參考）", fmtMoney(T.capital), "var(--teal)", "all", "capital")}
       </div>
-      <div style={{ overflowX: "auto", marginTop: 12 }}>
+      <div style={{ overflowX: "auto", marginTop: 14 }}>
         <table className="wel-table">
           <thead>
             <tr><th>案場</th><th className="right">收入</th><th className="right">材料</th><th className="right">人工</th><th className="right">發包</th><th className="right">其他支出</th><th className="right">固定資產</th><th className="right">總支出</th><th className="right">淨損益</th><th className="right">投入成本（參考）</th></tr>
@@ -2206,41 +2360,26 @@ function SettlementCard({ siteBreakdown }) {
           <tbody>
             {siteBreakdown.map((b) => (
               <tr key={b.id}>
-                <td>{b.name}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.collected)}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.material)}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.labor)}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.contract)}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.other)}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.asset)}</td>
-                <td className="mono strong" style={cell}>{fmtMoney(b.total)}</td>
-                <td className="mono strong" style={{ ...cell, color: color(b.profit) }}>{signed(b.profit)}</td>
-                <td className="mono" style={cell}>{fmtMoney(b.capital)}</td>
+                <td style={{ whiteSpace: "nowrap" }}>{b.name}</td>
+                {rowCells(b.id, b)}
               </tr>
             ))}
             <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
-              <td className="strong">全部案場合計</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.collected)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.material)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.labor)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.contract)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.other)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.asset)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.total)}</td>
-              <td className="mono strong" style={{ ...cell, color: color(T.profit) }}>{signed(T.profit)}</td>
-              <td className="mono strong" style={cell}>{fmtMoney(T.capital)}</td>
+              <td className="strong" style={{ whiteSpace: "nowrap" }}>全部案場合計</td>
+              {rowCells("all", T)}
             </tr>
           </tbody>
         </table>
       </div>
-      <div className="muted" style={{ fontSize: 11.5, marginTop: 8 }}>
+      {renderDrill()}
+      <div className="muted" style={{ fontSize: 11.5, marginTop: 10 }}>
         總支出 ＝ 材料 ＋ 人工 ＋ 發包 ＋ 其他支出 ＋ 固定資產；總淨損益 ＝ 收入 － 總支出。投入成本已在收入中回收，只列出供參考，不計入損益。
       </div>
     </div>
   );
 }
 
-function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, monthlyTrend, months, monthFilter, setMonthFilter, inventory, catById, orderCount, laborTotalAllTime, grandTotal, workerCount, isAllSites, siteBreakdown, currentSiteName, contractPaidTotal, contractTotalPrice, clientPaidTotal, profitLoss, openDiscussionCount, siteDiscussionItems }) {
+function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, monthlyTrend, months, monthFilter, setMonthFilter, inventory, catById, orderCount, laborTotalAllTime, grandTotal, workerCount, isAllSites, siteBreakdown, currentSiteName, contractPaidTotal, contractTotalPrice, clientPaidTotal, profitLoss, openDiscussionCount, siteDiscussionItems, drillData }) {
   const lowStock = inventory.filter((i) => i.remaining <= 0 && i.ordered > 0);
   const maxCat = Math.max(1, ...categoryBreakdown.map((d) => d.value));
   const maxSite = Math.max(1, ...siteBreakdown.map((d) => d.total));
@@ -2301,7 +2440,7 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
         </div>
       </div>
 
-      {isAllSites && siteBreakdown.length > 0 && <SettlementCard siteBreakdown={siteBreakdown} />}
+      {isAllSites && siteBreakdown.length > 0 && <SettlementCard siteBreakdown={siteBreakdown} drillData={drillData} />}
 
       {isAllSites && siteBreakdown.length > 0 && (
         <div className="wel-card">
@@ -6938,13 +7077,14 @@ function SiteLandingPage({
               <span className="wel-site-name">全部案場總覽</span>
             </div>
             <div className="wel-site-address muted">查看所有案場的加總與比較</div>
-            <div className="wel-site-stats" style={{ flexWrap: "wrap" }}>
+            <div className="wel-site-stats" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px 16px" }}>
               <div><span>案場數</span><b>{sites.length}</b></div>
-              <div><span>合計收入</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesIncome)}</b></div>
-              <div><span>合計總支出</span><b style={{ color: "var(--amber)" }}>{fmtMoney(allSitesTotal)}</b></div>
-              <div><span>總淨損益</span><b style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</b></div>
-              <div><span>合計投入成本</span><b style={{ color: "var(--teal)" }}>{fmtMoney(allSitesCapital)}</b></div>
+              <div><span>合計收入</span><button type="button" className="wel-num-link" style={{ color: "var(--teal)" }} title="點一下看明細" onClick={(e) => { e.stopPropagation(); onEnterSite("all", { siteKey: "all", kind: "collected" }); }}>{fmtMoney(allSitesIncome)}</button></div>
+              <div><span>合計總支出</span><button type="button" className="wel-num-link" style={{ color: "var(--amber)" }} title="點一下看明細" onClick={(e) => { e.stopPropagation(); onEnterSite("all", { siteKey: "all", kind: "total" }); }}>{fmtMoney(allSitesTotal)}</button></div>
+              <div><span>總淨損益</span><button type="button" className="wel-num-link" style={{ color: allSitesProfit >= 0 ? "var(--green)" : "var(--red)" }} title="點一下看明細" onClick={(e) => { e.stopPropagation(); onEnterSite("all", { siteKey: "all", kind: "profit" }); }}>{allSitesProfit >= 0 ? "+" : ""}{fmtMoney(allSitesProfit)}</button></div>
+              <div><span>合計投入成本（參考）</span><button type="button" className="wel-num-link" style={{ color: "var(--teal)" }} title="點一下看明細" onClick={(e) => { e.stopPropagation(); onEnterSite("all", { siteKey: "all", kind: "capital" }); }}>{fmtMoney(allSitesCapital)}</button></div>
             </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>點數字可直接看這個數字是由哪些紀錄組成</div>
           </div>
         )}
 
@@ -7233,6 +7373,11 @@ function StyleBlock() {
       .wel-manager-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
       .wel-manager-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
       .wel-manager-name { flex: 1; min-width: 70px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-body); }
+      .wel-num-link { background: none; border: none; border-bottom: 1px dashed var(--text-muted); color: inherit; font: inherit; cursor: pointer; padding: 0; text-align: inherit; }
+      .wel-num-link:hover, .wel-num-link.active { color: var(--teal) !important; border-bottom-color: var(--teal); }
+      .wel-site-stats .wel-num-link { font-size: 13px; font-family: var(--font-mono); font-weight: 600; text-align: left; align-self: flex-start; }
+      .wel-stat-btn { text-align: left; cursor: pointer; color: inherit; font: inherit; }
+      .wel-stat-btn:hover { border-color: var(--teal); }
       .wel-scan-input { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 13px; min-width: 0; box-sizing: border-box; }
       .wel-scan-name { width: 100%; min-width: 210px; }
       .wel-manager-mini { width: 74px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; font-family: var(--font-mono); }
@@ -7305,9 +7450,10 @@ function StyleBlock() {
       .wel-site-name { font-family: var(--font-display); font-size: 14.5px; font-weight: 500; flex: 1; }
       .wel-site-badge { font-size: 10px; font-family: var(--font-mono); background: rgba(232,163,61,0.15); color: var(--amber); border: 1px solid rgba(232,163,61,0.4); padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
       .wel-site-address { font-size: 12px; margin-top: -4px; }
-      .wel-site-stats { display: flex; gap: 14px; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+      .wel-site-stats { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
       .wel-site-stats div { display: flex; flex-direction: column; gap: 3px; }
       .wel-site-stats span { font-size: 10.5px; color: var(--text-muted); font-family: var(--font-mono); }
+      .wel-site-stats b, .wel-site-stats .wel-num-link { white-space: nowrap; }
       .wel-site-stats b { font-size: 13px; font-family: var(--font-mono); font-weight: 600; }
       .wel-site-actions { display: flex; align-items: center; gap: 6px; }
       .wel-site-actions .wel-btn-ghost { padding: 5px 9px; font-size: 11.5px; }
