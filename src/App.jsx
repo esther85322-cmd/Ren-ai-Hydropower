@@ -9,7 +9,7 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus, ChevronUp, Workflow
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus, ChevronUp, Workflow, Calculator, Scale
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
 import { parseReceiptText, parseItemListText } from "./receiptParse";
@@ -184,6 +184,10 @@ export default function WaterElectricLedger() {
   const [discussionItems, setDiscussionItems] = useState([]);
   const [notebookItems, setNotebookItems] = useState([]);
   const [workflow, setWorkflow] = useState([]);
+  const [estimates, setEstimates] = useState([]);
+  const [estimateFilesBySite, setEstimateFilesBySite] = useState({});
+  const estimateFilesRef = useRef(estimateFilesBySite);
+  estimateFilesRef.current = estimateFilesBySite;
   const [receipts, setReceipts] = useState([]);
   const receiptsRef = useRef(receipts);
   receiptsRef.current = receipts;
@@ -212,6 +216,8 @@ export default function WaterElectricLedger() {
       const nb = data.notebookitems ?? [];
       const rc = data.receipts ?? [];
       const wf = data.workflow ?? [];
+      const est = data.estimates ?? [];
+      const estf = data.estimatefiles ?? {};
       const ci = data.contractitems ?? [];
       const mi = data.materialitems ?? [];
       const sup = data.suppliers ?? [];
@@ -250,6 +256,8 @@ export default function WaterElectricLedger() {
       setNotebookItems(nb);
       setReceipts(rc);
       setWorkflow(wf);
+      setEstimates(est);
+      setEstimateFilesBySite(estf);
       setContractItems(ci);
       setMaterialItems(mi);
       setSuppliers(sup);
@@ -347,6 +355,16 @@ export default function WaterElectricLedger() {
   const persistDiscussionItems = useCallback(async (list) => {
     setSaving(true);
     await storageSet("discussionitems", list);
+    setSaving(false);
+  }, []);
+  const persistEstimates = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("estimates", list);
+    setSaving(false);
+  }, []);
+  const persistEstimateFiles = useCallback(async (map) => {
+    setSaving(true);
+    await storageSet("estimatefiles", map);
     setSaving(false);
   }, []);
   const persistWorkflow = useCallback(async (list) => {
@@ -471,6 +489,10 @@ export default function WaterElectricLedger() {
   const openDiscussionCount = useMemo(
     () => siteDiscussionItems.filter((d) => !d.resolved).length,
     [siteDiscussionItems]
+  );
+  const siteEstimates = useMemo(
+    () => (isAllSites ? estimates : estimates.filter((l) => l.siteId === currentSiteId)),
+    [estimates, currentSiteId, isAllSites]
   );
   const siteReceipts = useMemo(
     () => (isAllSites ? receipts : receipts.filter((r) => r.siteId === currentSiteId)),
@@ -1042,6 +1064,54 @@ export default function WaterElectricLedger() {
     const next = receiptsRef.current.filter((r) => r.id !== id);
     setReceipts(next);
     persistReceipts(next);
+  };
+
+  // ---- 估價單（僅供對照，不計入任何總結算） ----
+  const addEstimateLines = (rows) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增估價項目"); return; }
+    const recs = rows.map((r) => ({
+      id: uid(), siteId: currentSiteId, categoryId: r.categoryId || categories[0]?.id || "", name: (r.name || "").trim(),
+      quantity: Number(r.quantity) || 0, unit: (r.unit || "").trim(), unitPrice: Number(r.unitPrice) || 0, note: (r.note || "").trim(),
+    }));
+    const next = [...estimates, ...recs];
+    setEstimates(next);
+    persistEstimates(next);
+    return recs.length;
+  };
+  const addEstimateLine = (line) => { if (addEstimateLines([line])) showToast("已新增估價項目"); };
+  const confirmScannedEstimate = async (rows) => {
+    const n = addEstimateLines(rows.map((r) => ({ ...r, note: "辨識匯入" })));
+    if (n) showToast(`已加入 ${n} 個估價項目`);
+  };
+  const updateEstimateLine = (id, patch) => {
+    const next = estimates.map((l) => (l.id === id ? { ...l, ...patch } : l));
+    setEstimates(next);
+    persistEstimates(next);
+  };
+  const deleteEstimateLine = (id) => {
+    const next = estimates.filter((l) => l.id !== id);
+    setEstimates(next);
+    persistEstimates(next);
+  };
+  const addEstimateFile = async (file) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能上傳估價單"); return false; }
+    const siteId = currentSiteId;
+    const meta = await uploadFileMeta(file);
+    if (!meta) return false;
+    const cur = estimateFilesRef.current;
+    const next = { ...cur, [siteId]: [...(cur[siteId] || []), meta] };
+    setEstimateFilesBySite(next);
+    persistEstimateFiles(next);
+    showToast(`已上傳：${meta.name}`);
+    return true;
+  };
+  const deleteEstimateFile = (file) => {
+    if (!window.confirm(`確定要刪除估價單檔案「${file.name}」嗎？刪除後無法復原。`)) return;
+    const cur = estimateFilesRef.current;
+    const next = { ...cur, [currentSiteId]: (cur[currentSiteId] || []).filter((f) => f.id !== file.id) };
+    setEstimateFilesBySite(next);
+    persistEstimateFiles(next);
+    fileRemove(file.id, file.chunks);
   };
 
   // ---- 掃描校對後批次加入 ----
@@ -1685,6 +1755,7 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<HardHat size={16} />} label="師傅出工" active={tab === "labor"} onClick={() => setTab("labor")} />
             <NavBtn icon={<ClipboardList size={16} />} label="叫貨紀錄" active={tab === "orders"} onClick={() => setTab("orders")} />
             <NavBtn icon={<Camera size={16} />} label="收貨單" active={tab === "receipts"} onClick={() => setTab("receipts")} />
+            <NavBtn icon={<Calculator size={16} />} label="估價單" active={tab === "estimate"} onClick={() => setTab("estimate")} />
             <NavBtn icon={<Boxes size={16} />} label="庫存現況" active={tab === "inventory"} onClick={() => setTab("inventory")} />
             <NavBtn icon={<Tags size={16} />} label="品項類別" active={tab === "categories"} onClick={() => setTab("categories")} />
             <NavBtn icon={<Handshake size={16} />} label="發包與領款" active={tab === "contracts"} onClick={() => setTab("contracts")} />
@@ -1760,6 +1831,29 @@ export default function WaterElectricLedger() {
               removeSupplier={removeSupplier}
               showToast={showToast}
               confirmScannedOrders={confirmScannedOrders}
+            />
+          )}
+          {tab === "estimate" && (
+            <EstimateTab
+              estimates={siteEstimates}
+              orders={siteOrders}
+              categories={categories}
+              catById={catById}
+              materialItems={materialItems}
+              siteById={siteById}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
+              currentSiteId={currentSiteId}
+              estimateFiles={estimateFilesBySite[currentSiteId] || []}
+              addEstimateFile={addEstimateFile}
+              deleteEstimateFile={deleteEstimateFile}
+              openContractFile={openContractFile}
+              addEstimateLine={addEstimateLine}
+              updateEstimateLine={updateEstimateLine}
+              deleteEstimateLine={deleteEstimateLine}
+              confirmScannedEstimate={confirmScannedEstimate}
+              showToast={showToast}
             />
           )}
           {tab === "receipts" && (
@@ -3831,8 +3925,9 @@ function ReceiptsTab({ receipts, siteById, suppliers, isAllSites, sites, setCurr
 }
 
 // Photo -> OCR -> editable table. Nothing is saved until the user presses the confirm button.
-function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCategoryId, onConfirmOrders, onConfirmItems, onClose, showToast }) {
-  const isOrder = mode === "order";
+function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCategoryId, onConfirmOrders, onConfirmItems, onConfirmEstimate, onClose, showToast }) {
+  const isEstimate = mode === "estimate";
+  const isOrder = mode === "order" || isEstimate;
   const [phase, setPhase] = useState("pick");
   const [file, setFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -3910,7 +4005,8 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
     }
     setSaving(true);
     try {
-      if (isOrder) await onConfirmOrders(chosen, meta, meta.saveToAlbum ? file : null);
+      if (isEstimate) await onConfirmEstimate(chosen);
+      else if (isOrder) await onConfirmOrders(chosen, meta, meta.saveToAlbum ? file : null);
       else onConfirmItems(chosen);
       onClose();
     } finally {
@@ -3928,7 +4024,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
   return (
     <div className="wel-card wel-form" style={{ borderColor: "var(--teal)" }}>
       <div className="wel-card-title-row">
-        <div className="wel-card-title"><ScanLine size={14} /> {isOrder ? "拍照辨識收貨單 → 校對 → 存入叫貨" : "拍照掃描品項 → 校對 → 加入品項清單"}</div>
+        <div className="wel-card-title"><ScanLine size={14} /> {isEstimate ? "拍照辨識估價單 → 校對 → 加入估價項目" : isOrder ? "拍照辨識收貨單 → 校對 → 存入叫貨" : "拍照掃描品項 → 校對 → 加入品項清單"}</div>
         <button type="button" className="wel-btn-ghost" onClick={onClose}>關閉</button>
       </div>
       <input ref={camRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={onPick} />
@@ -3937,7 +4033,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
       {phase === "pick" && (
         <>
           <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
-            {isOrder ? "拍下收貨單／送貨單，網頁會在你的手機或電腦上直接辨識品名與數量（照片不會傳給第三方）。辨識結果只是「建議」，一定會先讓你校對修改，按確認後才會存入。" : "拍下品項清單、價目表或貨品標示，網頁會辨識出品名、單位與單價，讓你校對修改後再加入品項清單。"}
+            {isEstimate ? "拍下簽約估價單，網頁會在你的手機或電腦上辨識品名、數量與單價（照片不會傳給第三方）。辨識結果只是「建議」，一定會先讓你校對修改，按確認後才會加入。" : isOrder ? "拍下收貨單／送貨單，網頁會在你的手機或電腦上直接辨識品名與數量（照片不會傳給第三方）。辨識結果只是「建議」，一定會先讓你校對修改，按確認後才會存入。" : "拍下品項清單、價目表或貨品標示，網頁會辨識出品名、單位與單價，讓你校對修改後再加入品項清單。"}
             <br />小提醒：光線充足、整張拍正、字要清楚；手寫字辨識較不準，請多留意校對。
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -3957,7 +4053,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
       {phase === "review" && (
         <>
           {error && <div className="wel-mismatch" style={{ marginBottom: 8 }}>{error}</div>}
-          {isOrder ? (
+          {isEstimate ? null : isOrder ? (
             <div className="wel-form-grid">
               <Field label="日期"><input type="date" value={meta.date} onChange={(e) => setMeta({ ...meta, date: e.target.value })} /></Field>
               <Field label="廠商 / 供應商">
@@ -4060,7 +4156,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
               )}
             </div>
           </div>
-          {isOrder && (
+          {isOrder && !isEstimate && (
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", margin: "10px 0", fontSize: 13 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
                 <input type="checkbox" checked={meta.addNewItems} onChange={(e) => setMeta({ ...meta, addNewItems: e.target.checked })} style={{ width: 16, height: 16 }} /> 新品項同時加入品項清單
@@ -4071,7 +4167,7 @@ function ReceiptScanner({ mode, categories, materialItems, suppliers, defaultCat
             </div>
           )}
           <button type="button" className="wel-btn-primary" disabled={saving} onClick={confirm} style={{ marginTop: 8 }}>
-            {saving ? "儲存中…" : isOrder ? `確認無誤，加入叫貨（${rows.filter((r) => r.include).length} 筆）` : `確認無誤，加入品項清單（${rows.filter((r) => r.include).length} 項）`}
+            {saving ? "儲存中…" : isEstimate ? `確認無誤，加入估價單（${rows.filter((r) => r.include).length} 項）` : isOrder ? `確認無誤，加入叫貨（${rows.filter((r) => r.include).length} 筆）` : `確認無誤，加入品項清單（${rows.filter((r) => r.include).length} 項）`}
           </button>
         </>
       )}
@@ -4221,7 +4317,7 @@ function BulkOrderPanel({ categories, catById, materialItems, suppliers, default
   );
 }
 
-function ContractFiles({ contract, addContractFile, deleteContractFile, openContractFile }) {
+function ContractFiles({ contract, addContractFile, deleteContractFile, openContractFile, label = "合約檔案", uploadText = "上傳合約" }) {
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
   const files = contract.files || [];
@@ -4236,10 +4332,10 @@ function ContractFiles({ contract, addContractFile, deleteContractFile, openCont
   return (
     <div className="wel-floor-summary-line" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Paperclip size={12} /> 合約檔案（{files.length}）</span>
+        <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Paperclip size={12} /> {label}（{files.length}）</span>
         <input ref={inputRef} type="file" accept="application/pdf,image/*,.doc,.docx" multiple style={{ display: "none" }} onChange={onPick} />
         <button type="button" className="wel-btn-ghost" disabled={busy} onClick={() => inputRef.current && inputRef.current.click()}>
-          {busy ? "上傳中…" : <><Upload size={12} /> 上傳合約</>}
+          {busy ? "上傳中…" : <><Upload size={12} /> {uploadText}</>}
         </button>
       </div>
       {files.map((f) => (
@@ -5847,6 +5943,247 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
       {workflow.length > 0 && !(editing && editing.isNew && editing.type === "phase") && (
         <button type="button" className="wel-btn-primary" onClick={startNewPhase}><Plus size={15} /> 新增階段</button>
       )}
+    </div>
+  );
+}
+
+// 估價單：簽約估價單的項目，與實際叫貨對照（估價 − 實際；負數＝超支）。僅供對照，不計入任何總結算。
+function EstimateTab({
+  estimates, orders, categories, catById, materialItems, siteById, isAllSites, sites, setCurrentSiteId, currentSiteId,
+  estimateFiles, addEstimateFile, deleteEstimateFile, openContractFile,
+  addEstimateLine, updateEstimateLine, deleteEstimateLine, confirmScannedEstimate, showToast,
+}) {
+  const emptyForm = { categoryId: categories[0]?.id || "", name: "", quantity: "", unit: "", unitPrice: "", note: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+
+  const lineAmount = (l) => (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0);
+  const catName = (id) => catById[id]?.name || "未分類";
+  const signed = (n) => (n >= 0 ? "+" : "") + fmtMoney(n);
+  const tone = (n) => (n >= 0 ? "var(--green)" : "var(--red)");
+
+  const estTotal = estimates.reduce((s, l) => s + lineAmount(l), 0);
+  const actualTotal = orders.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  const diffTotal = estTotal - actualTotal;
+  const usedPct = estTotal > 0 ? (actualTotal / estTotal) * 100 : 0;
+
+  const byCategory = useMemo(() => {
+    const m = {};
+    const row = (id) => m[id] || (m[id] = { id, est: 0, actual: 0 });
+    estimates.forEach((l) => { row(l.categoryId || "").est += (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0); });
+    orders.forEach((o) => { row(o.categoryId || "").actual += Number(o.amount) || 0; });
+    return Object.values(m).filter((r) => r.est || r.actual).sort((a, b) => (b.est + b.actual) - (a.est + a.actual));
+  }, [estimates, orders]);
+
+  const actualByName = useMemo(() => {
+    const m = {};
+    orders.forEach((o) => {
+      const k = (o.itemName || "").trim();
+      const r = m[k] || (m[k] = { qty: 0, amount: 0 });
+      r.qty += Number(o.quantity) || 0;
+      r.amount += Number(o.amount) || 0;
+    });
+    return m;
+  }, [orders]);
+
+  const itemRows = useMemo(() => {
+    const seen = new Set();
+    return estimates.map((l) => {
+      const key = (l.name || "").trim();
+      const matched = key in actualByName;
+      const first = !seen.has(key);
+      seen.add(key);
+      return { line: l, matched, first, actual: matched && first ? actualByName[key] : null };
+    });
+  }, [estimates, actualByName]);
+
+  const catItems = materialItems.filter((m) => m.categoryId === form.categoryId);
+  const setName = (name) => {
+    const item = materialItems.find((m) => m.name === name.trim());
+    setForm((f) => ({ ...f, name, ...(item ? { categoryId: item.categoryId || f.categoryId, unit: f.unit || item.unit || "", unitPrice: f.unitPrice === "" ? (item.defaultPrice ?? "") : f.unitPrice } : {}) }));
+  };
+  const submit = () => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增估價項目"); return; }
+    if (!form.name.trim()) { showToast("請填寫「項目名稱」"); return; }
+    if (!(Number(form.quantity) > 0) || form.unitPrice === "" || !(Number(form.unitPrice) >= 0)) { showToast("請填寫「數量」與「單價」"); return; }
+    addEstimateLine(form);
+    setForm({ ...emptyForm, categoryId: form.categoryId });
+  };
+  const startEdit = (l) => { setEditingId(l.id); setDraft({ categoryId: l.categoryId, name: l.name, quantity: l.quantity, unit: l.unit || "", unitPrice: l.unitPrice, note: l.note || "" }); };
+  const saveEdit = (id) => {
+    if (!draft.name.trim()) { showToast("請填寫「項目名稱」"); return; }
+    updateEstimateLine(id, { ...draft, name: draft.name.trim(), quantity: Number(draft.quantity) || 0, unitPrice: Number(draft.unitPrice) || 0 });
+    setEditingId(null);
+    setDraft(null);
+  };
+
+  const handleExportExcel = () => exportExcel("估價單對照", [
+    { name: "依類別對照", rows: [...byCategory.map((r) => ({ 類別: catName(r.id), 估價金額: r.est, 實際叫貨: r.actual, "差異（估價－實際）": r.est - r.actual })), { 類別: "合計", 估價金額: estTotal, 實際叫貨: actualTotal, "差異（估價－實際）": diffTotal }] },
+    { name: "逐項對照", rows: itemRows.map(({ line: l, matched, actual }) => ({ 類別: catName(l.categoryId), 項目: l.name, 估價數量: Number(l.quantity) || 0, 單位: l.unit || "", 估價單價: Number(l.unitPrice) || 0, 估價金額: lineAmount(l), 實際數量: actual ? actual.qty : "", 實際金額: actual ? actual.amount : "", "差異金額（估價－實際）": actual ? lineAmount(l) - actual.amount : "", 備註: l.note || (matched ? "" : "未對應叫貨品項") })) },
+  ]);
+  const handleExportWord = () => exportWord("估價單對照", "估價單與實際叫貨對照", [
+    { title: "總覽", note: "差異 ＝ 估價 － 實際叫貨；負數代表超出估價。僅供對照，不計入總結算。", headers: ["項目", "金額"], rows: [["估價合計", fmtMoney(estTotal)], ["實際叫貨合計", fmtMoney(actualTotal)], ["差異（估價淨損益）", signed(diffTotal)]] },
+    { title: "依類別對照", headers: ["類別", "估價金額", "實際叫貨", "差異"], rows: byCategory.map((r) => [catName(r.id), fmtMoney(r.est), fmtMoney(r.actual), signed(r.est - r.actual)]) },
+    { title: "逐項對照", headers: ["類別", "項目", "估價數量", "估價金額", "實際數量", "實際金額", "差異金額"], rows: itemRows.map(({ line: l, actual }) => [catName(l.categoryId), l.name, `${fmtNum(l.quantity)} ${l.unit || ""}`, fmtMoney(lineAmount(l)), actual ? `${fmtNum(actual.qty)} ${l.unit || ""}` : "—", actual ? fmtMoney(actual.amount) : "—", actual ? signed(lineAmount(l) - actual.amount) : "—"]) },
+  ]);
+
+  const cell = { padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" };
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">估價 · ESTIMATE</div>
+          <h1 className="wel-h1">估價單與叫貨對照</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>
+        把簽約估價單的項目放進來，系統會拿你之後叫的貨去對照。差異 ＝ 估價 － 實際叫貨，<b>負數代表超出估價</b>。這裡的數字只用來統計估價與淨損益，<b>不會計入「全部案場總結算」</b>。
+      </div>
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增估價項目與上傳估價單" />}
+
+      <div className="wel-labor-summary">
+        <div className="wel-labor-stat"><span>估價合計</span><b style={{ color: "var(--teal)" }}>{fmtMoney(estTotal)}</b></div>
+        <div className="wel-labor-stat"><span>實際叫貨合計</span><b style={{ color: "var(--amber)" }}>{fmtMoney(actualTotal)}</b></div>
+        <div className="wel-labor-stat"><span>估價淨損益（估價 － 實際）</span><b style={{ color: tone(diffTotal) }}>{signed(diffTotal)}</b></div>
+        <div className="wel-labor-stat"><span>已用估價</span><b>{estTotal > 0 ? usedPct.toFixed(1) + "%" : "—"}</b></div>
+      </div>
+
+      {!isAllSites && (
+        <div className="wel-card" style={{ marginTop: 12 }}>
+          <ContractFiles
+            contract={{ id: currentSiteId, files: estimateFiles }} label="估價單檔案（簽約估價單原檔，PDF／照片）" uploadText="上傳估價單"
+            addContractFile={(id, f) => addEstimateFile(f)} deleteContractFile={(id, f) => deleteEstimateFile(f)} openContractFile={openContractFile}
+          />
+        </div>
+      )}
+
+      {!isAllSites && (
+        <div style={{ margin: "12px 0" }}>
+          {scanOpen ? (
+            <ReceiptScanner
+              mode="estimate" categories={categories} materialItems={materialItems} suppliers={[]}
+              defaultCategoryId={form.categoryId} onConfirmEstimate={confirmScannedEstimate}
+              onClose={() => setScanOpen(false)} showToast={showToast}
+            />
+          ) : (
+            <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照辨識估價單（先校對再加入）</button>
+          )}
+        </div>
+      )}
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><Calculator size={14} /> 新增估價項目</div>
+        <div className="wel-form-grid">
+          <Field label="類別">
+            <select value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <Field label="項目名稱（和叫貨品項同名才會逐項對照）" wide>
+            <input list="wel-estimate-items" placeholder="可從品項清單選，也可自己輸入" value={form.name} onChange={(e) => setName(e.target.value)} />
+            <datalist id="wel-estimate-items">{catItems.map((m) => <option key={m.id} value={m.name} />)}</datalist>
+          </Field>
+          <Field label="數量"><input type="number" step="any" min="0" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></Field>
+          <Field label="單位"><input placeholder="支 / 米 / 式" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></Field>
+          <Field label="估價單價"><input type="number" step="any" min="0" value={form.unitPrice} onChange={(e) => setForm({ ...form, unitPrice: e.target.value })} /></Field>
+          <Field label="小計"><div className="wel-amount-preview">{fmtMoney((Number(form.quantity) || 0) * (Number(form.unitPrice) || 0))}</div></Field>
+          <Field label="備註" wide><input placeholder="選填" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submit}><Plus size={15} /> 新增估價項目</button>
+      </div>
+
+      <div className="wel-card" style={{ marginTop: 12, padding: 0, overflow: "hidden" }}>
+        <div className="wel-card-title" style={{ padding: "12px 14px 0" }}><Scale size={14} /> 依類別對照</div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wel-table">
+            <thead><tr><th>類別</th><th className="right">估價金額</th><th className="right">實際叫貨</th><th className="right">差異（估價－實際）</th><th className="right">已用</th></tr></thead>
+            <tbody>
+              {byCategory.length === 0 && <tr><td colSpan={5}><Empty text="尚無估價項目，也沒有叫貨紀錄" /></td></tr>}
+              {byCategory.map((r) => (
+                <tr key={r.id}>
+                  <td><span className="wel-tag" style={{ borderColor: catById[r.id]?.color }}>{catName(r.id)}</span>{r.est === 0 && <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>未列入估價</span>}</td>
+                  <td className="mono" style={cell}>{fmtMoney(r.est)}</td>
+                  <td className="mono" style={cell}>{fmtMoney(r.actual)}</td>
+                  <td className="mono strong" style={{ ...cell, color: tone(r.est - r.actual) }}>{signed(r.est - r.actual)}</td>
+                  <td className="mono muted" style={cell}>{r.est > 0 ? ((r.actual / r.est) * 100).toFixed(0) + "%" : "—"}</td>
+                </tr>
+              ))}
+              {byCategory.length > 0 && (
+                <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
+                  <td className="strong">合計</td>
+                  <td className="mono strong" style={cell}>{fmtMoney(estTotal)}</td>
+                  <td className="mono strong" style={cell}>{fmtMoney(actualTotal)}</td>
+                  <td className="mono strong" style={{ ...cell, color: tone(diffTotal) }}>{signed(diffTotal)}</td>
+                  <td className="mono strong" style={cell}>{estTotal > 0 ? usedPct.toFixed(0) + "%" : "—"}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="wel-card" style={{ marginTop: 12, padding: 0, overflow: "hidden" }}>
+        <div className="wel-card-title" style={{ padding: "12px 14px 0" }}><ListOrdered size={14} /> 逐項對照（點一列可修改）</div>
+        <div className="muted" style={{ fontSize: 11.5, padding: "4px 14px 8px" }}>項目名稱要和叫貨的品項名稱一致才會帶出實際數量與金額；對不上的列顯示「—」，整體差異請看上方「依類別對照」。</div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wel-table">
+            <thead>
+              <tr>{isAllSites && <th>案場</th>}<th>類別</th><th>項目</th><th className="right">估價數量</th><th className="right">估價金額</th><th className="right">實際數量</th><th className="right">實際金額</th><th className="right">差異金額</th><th></th></tr>
+            </thead>
+            <tbody>
+              {itemRows.length === 0 && <tr><td colSpan={isAllSites ? 9 : 8}><Empty text="尚未新增估價項目" /></td></tr>}
+              {itemRows.map(({ line: l, matched, first, actual }) => {
+                const isOpen = editingId === l.id;
+                return (
+                  <React.Fragment key={l.id}>
+                    <tr className="wel-row-clickable" onClick={() => (isOpen ? (setEditingId(null), setDraft(null)) : startEdit(l))}>
+                      {isAllSites && <td className="muted">{siteById[l.siteId]?.name || "—"}</td>}
+                      <td><span className="wel-tag" style={{ borderColor: catById[l.categoryId]?.color }}>{catName(l.categoryId)}</span></td>
+                      <td>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{l.name}</span>
+                        {l.note && <div className="muted" style={{ fontSize: 11.5, marginLeft: 18 }}>{l.note}</div>}
+                      </td>
+                      <td className="mono" style={cell}>{fmtNum(l.quantity)} {l.unit}</td>
+                      <td className="mono" style={cell}>{fmtMoney(lineAmount(l))}</td>
+                      <td className="mono" style={cell}>{actual ? `${fmtNum(actual.qty)} ${l.unit || ""}` : "—"}</td>
+                      <td className="mono" style={cell}>{actual ? fmtMoney(actual.amount) : (matched && !first ? <span className="muted" style={{ fontSize: 11 }}>同名併入上方</span> : "—")}</td>
+                      <td className="mono strong" style={{ ...cell, color: actual ? tone(lineAmount(l) - actual.amount) : undefined }}>{actual ? signed(lineAmount(l) - actual.amount) : "—"}</td>
+                      <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteEstimateLine(l.id); }}><Trash2 size={14} /></button></td>
+                    </tr>
+                    {isOpen && draft && (
+                      <tr onClick={(e) => e.stopPropagation()}>
+                        <td colSpan={isAllSites ? 9 : 8} style={{ padding: 0 }}>
+                          <div className="wel-timeline-wrap">
+                            <div className="wel-form-grid">
+                              <Field label="類別">
+                                <select value={draft.categoryId} onChange={(e) => setDraft({ ...draft, categoryId: e.target.value })}>
+                                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                </select>
+                              </Field>
+                              <Field label="項目名稱" wide><input list="wel-estimate-items" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></Field>
+                              <Field label="數量"><input type="number" step="any" min="0" value={draft.quantity} onChange={(e) => setDraft({ ...draft, quantity: e.target.value })} /></Field>
+                              <Field label="單位"><input value={draft.unit} onChange={(e) => setDraft({ ...draft, unit: e.target.value })} /></Field>
+                              <Field label="估價單價"><input type="number" step="any" min="0" value={draft.unitPrice} onChange={(e) => setDraft({ ...draft, unitPrice: e.target.value })} /></Field>
+                              <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                            </div>
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button type="button" className="wel-btn-primary" onClick={() => saveEdit(l.id)}>儲存修改</button>
+                              <button type="button" className="wel-btn-ghost" onClick={() => { setEditingId(null); setDraft(null); }}>取消</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
