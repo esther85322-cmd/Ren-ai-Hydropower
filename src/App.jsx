@@ -12,7 +12,7 @@ import {
   MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus, ChevronUp, Workflow, Calculator, Scale
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
-import { parseReceiptText, parseItemListText } from "./receiptParse";
+import { parseReceiptText, parseItemListText, suggestNames } from "./receiptParse";
 import { lockApp } from "./PasswordGate.jsx";
 
 const DEFAULT_CATEGORIES = [
@@ -6119,23 +6119,29 @@ function EstimateTab({
     const m = {};
     orders.forEach((o) => {
       const k = (o.itemName || "").trim();
-      const r = m[k] || (m[k] = { qty: 0, amount: 0 });
+      const r = m[k] || (m[k] = { qty: 0, amount: 0, unit: o.unit || "" });
       r.qty += Number(o.quantity) || 0;
       r.amount += Number(o.amount) || 0;
     });
     return m;
   }, [orders]);
 
+  // 每個估價項目可對應一個或多個叫貨品項（名稱相同自動對應，不同的可手動指定）；同一個叫貨品項只算給最前面的那一列
   const itemRows = useMemo(() => {
-    const seen = new Set();
+    const claimed = new Set();
     return estimates.map((l) => {
-      const key = (l.name || "").trim();
-      const matched = key in actualByName;
-      const first = !seen.has(key);
-      seen.add(key);
-      return { line: l, matched, first, actual: matched && first ? actualByName[key] : null };
+      const own = (l.name || "").trim();
+      const names = [...new Set([own, ...(l.matchNames || [])])].filter((n) => n && n in actualByName && !claimed.has(n));
+      names.forEach((n) => claimed.add(n));
+      const actual = names.length ? names.reduce((acc, n) => ({ qty: acc.qty + actualByName[n].qty, amount: acc.amount + actualByName[n].amount }), { qty: 0, amount: 0 }) : null;
+      return { line: l, names, matched: names.length > 0, actual, actualUnit: names.length ? actualByName[names[0]].unit : "", ownTaken: !names.length && own in actualByName };
     });
   }, [estimates, actualByName]);
+  const allOrderNames = useMemo(() => Object.keys(actualByName).filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-Hant")), [actualByName]);
+  const claimedNames = useMemo(() => new Set(itemRows.flatMap((r) => r.names)), [itemRows]);
+  const freeOrderNames = allOrderNames.filter((n) => !claimedNames.has(n));
+  const addMatch = (line, name) => updateEstimateLine(line.id, { matchNames: [...new Set([...(line.matchNames || []), name])] });
+  const removeMatch = (line, name) => updateEstimateLine(line.id, { matchNames: (line.matchNames || []).filter((n) => n !== name) });
 
   const catItems = materialItems.filter((m) => m.categoryId === form.categoryId);
   const setName = (name) => {
@@ -6149,22 +6155,22 @@ function EstimateTab({
     addEstimateLine(form);
     setForm({ ...emptyForm, categoryId: form.categoryId });
   };
-  const startEdit = (l) => { setEditingId(l.id); setDraft({ categoryId: l.categoryId, name: l.name, quantity: l.quantity, unit: l.unit || "", unitPrice: l.unitPrice, note: l.note || "" }); };
+  const startEdit = (l) => { setEditingId(l.id); setDraft({ categoryId: l.categoryId, name: l.name, quantity: l.quantity, unit: l.unit || "", unitPrice: l.unitPrice, note: l.note || "", matchNames: l.matchNames || [] }); };
   const saveEdit = (id) => {
     if (!draft.name.trim()) { showToast("請填寫「項目名稱」"); return; }
-    updateEstimateLine(id, { ...draft, name: draft.name.trim(), quantity: Number(draft.quantity) || 0, unitPrice: Number(draft.unitPrice) || 0 });
+    updateEstimateLine(id, { ...draft, name: draft.name.trim(), quantity: Number(draft.quantity) || 0, unitPrice: Number(draft.unitPrice) || 0, matchNames: draft.matchNames });
     setEditingId(null);
     setDraft(null);
   };
 
   const handleExportExcel = () => exportExcel("估價單對照", [
     { name: "依類別對照", rows: [...byCategory.map((r) => ({ 類別: catName(r.id), 估價金額: r.est, 實際叫貨: r.actual, "差異（估價－實際）": r.est - r.actual })), { 類別: "合計", 估價金額: estTotal, 實際叫貨: actualTotal, "差異（估價－實際）": diffTotal }] },
-    { name: "逐項對照", rows: itemRows.map(({ line: l, matched, actual }) => ({ 類別: catName(l.categoryId), 項目: l.name, 估價數量: Number(l.quantity) || 0, 單位: l.unit || "", 估價單價: Number(l.unitPrice) || 0, 估價金額: lineAmount(l), 實際數量: actual ? actual.qty : "", 實際金額: actual ? actual.amount : "", "差異金額（估價－實際）": actual ? lineAmount(l) - actual.amount : "", 備註: l.note || (matched ? "" : "未對應叫貨品項") })) },
+    { name: "逐項對照", rows: itemRows.map(({ line: l, matched, actual, names }) => ({ 類別: catName(l.categoryId), 項目: l.name, 對應叫貨品項: names.join("、"), 估價數量: Number(l.quantity) || 0, 單位: l.unit || "", 估價單價: Number(l.unitPrice) || 0, 估價金額: lineAmount(l), 實際數量: actual ? actual.qty : "", 實際金額: actual ? actual.amount : "", "差異金額（估價－實際）": actual ? lineAmount(l) - actual.amount : "", 備註: l.note || (matched ? "" : "未對應叫貨品項") })) },
   ]);
   const handleExportWord = () => exportWord("估價單對照", "估價單與實際叫貨對照", [
     { title: "總覽", note: "差異 ＝ 估價 － 實際叫貨；負數代表超出估價。僅供對照，不計入總結算。", headers: ["項目", "金額"], rows: [["估價合計", fmtMoney(estTotal)], ["實際叫貨合計", fmtMoney(actualTotal)], ["差異（估價淨損益）", signed(diffTotal)]] },
     { title: "依類別對照", headers: ["類別", "估價金額", "實際叫貨", "差異"], rows: byCategory.map((r) => [catName(r.id), fmtMoney(r.est), fmtMoney(r.actual), signed(r.est - r.actual)]) },
-    { title: "逐項對照", headers: ["類別", "項目", "估價數量", "估價金額", "實際數量", "實際金額", "差異金額"], rows: itemRows.map(({ line: l, actual }) => [catName(l.categoryId), l.name, `${fmtNum(l.quantity)} ${l.unit || ""}`, fmtMoney(lineAmount(l)), actual ? `${fmtNum(actual.qty)} ${l.unit || ""}` : "—", actual ? fmtMoney(actual.amount) : "—", actual ? signed(lineAmount(l) - actual.amount) : "—"]) },
+    { title: "逐項對照", headers: ["類別", "項目", "對應叫貨品項", "估價數量", "估價金額", "實際數量", "實際金額", "差異金額"], rows: itemRows.map(({ line: l, actual, names, actualUnit }) => [catName(l.categoryId), l.name, names.join("、") || "—", `${fmtNum(l.quantity)} ${l.unit || ""}`, fmtMoney(lineAmount(l)), actual ? `${fmtNum(actual.qty)} ${actualUnit || ""}` : "—", actual ? fmtMoney(actual.amount) : "—", actual ? signed(lineAmount(l) - actual.amount) : "—"]) },
   ]);
 
   const cell = { padding: "6px 10px", textAlign: "right", whiteSpace: "nowrap" };
@@ -6265,7 +6271,7 @@ function EstimateTab({
 
       <div className="wel-card" style={{ marginTop: 12, padding: 0, overflow: "hidden" }}>
         <div className="wel-card-title" style={{ padding: "12px 14px 0" }}><ListOrdered size={14} /> 逐項對照（點一列可修改）</div>
-        <div className="muted" style={{ fontSize: 11.5, padding: "4px 14px 8px" }}>項目名稱要和叫貨的品項名稱一致才會帶出實際數量與金額；對不上的列顯示「—」，整體差異請看上方「依類別對照」。</div>
+        <div className="muted" style={{ fontSize: 11.5, padding: "4px 14px 8px" }}>名稱和叫貨品項相同會自動對應；名稱不同時，列下方會出現「建議對應」可一鍵套用，或點該列自己指定要對應哪些叫貨品項（只要指定一次，之後都會記住）。同一個叫貨品項只會算給最前面的那一列。</div>
         <div style={{ overflowX: "auto" }}>
           <table className="wel-table">
             <thead>
@@ -6273,7 +6279,8 @@ function EstimateTab({
             </thead>
             <tbody>
               {itemRows.length === 0 && <tr><td colSpan={isAllSites ? 9 : 8}><Empty text="尚未新增估價項目" /></td></tr>}
-              {itemRows.map(({ line: l, matched, first, actual }) => {
+              {itemRows.map(({ line: l, matched, actual, actualUnit, names, ownTaken }) => {
+                const sugg = !matched && !ownTaken ? suggestNames(l.name, freeOrderNames, 3).filter((n) => !(l.matchNames || []).includes(n)) : [];
                 const isOpen = editingId === l.id;
                 return (
                   <React.Fragment key={l.id}>
@@ -6283,11 +6290,18 @@ function EstimateTab({
                       <td>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>{isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{l.name}</span>
                         {l.note && <div className="muted" style={{ fontSize: 11.5, marginLeft: 18 }}>{l.note}</div>}
+                        {matched && (l.matchNames || []).length > 0 && <div className="muted" style={{ fontSize: 11.5, marginLeft: 18 }}>對應叫貨：{names.join("、")}</div>}
+                        {sugg.length > 0 && (
+                          <div style={{ fontSize: 11.5, marginLeft: 18, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                            <span className="muted">建議對應：</span>
+                            {sugg.map((n) => <button key={n} type="button" className="wel-chip-btn" onClick={(e) => { e.stopPropagation(); addMatch(l, n); }} title="點一下，把這個叫貨品項算給這一列">{n}</button>)}
+                          </div>
+                        )}
                       </td>
                       <td className="mono" style={cell}>{fmtNum(l.quantity)} {l.unit}</td>
                       <td className="mono" style={cell}>{fmtMoney(lineAmount(l))}</td>
-                      <td className="mono" style={cell}>{actual ? `${fmtNum(actual.qty)} ${l.unit || ""}` : "—"}</td>
-                      <td className="mono" style={cell}>{actual ? fmtMoney(actual.amount) : (matched && !first ? <span className="muted" style={{ fontSize: 11 }}>同名併入上方</span> : "—")}</td>
+                      <td className="mono" style={cell}>{actual ? `${fmtNum(actual.qty)} ${actualUnit || ""}` : "—"}</td>
+                      <td className="mono" style={cell}>{actual ? fmtMoney(actual.amount) : (ownTaken ? <span className="muted" style={{ fontSize: 11 }}>同名併入上方</span> : "—")}</td>
                       <td className="mono strong" style={{ ...cell, color: actual ? tone(lineAmount(l) - actual.amount) : undefined }}>{actual ? signed(lineAmount(l) - actual.amount) : "—"}</td>
                       <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteEstimateLine(l.id); }}><Trash2 size={14} /></button></td>
                     </tr>
@@ -6306,6 +6320,20 @@ function EstimateTab({
                               <Field label="單位"><input value={draft.unit} onChange={(e) => setDraft({ ...draft, unit: e.target.value })} /></Field>
                               <Field label="估價單價"><input type="number" step="any" min="0" value={draft.unitPrice} onChange={(e) => setDraft({ ...draft, unitPrice: e.target.value })} /></Field>
                               <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                              <Field label="對應叫貨品項（估價名稱和叫貨品項名稱不同時，在這裡指定，可選多個）" wide>
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", minHeight: 34 }}>
+                                  {draft.matchNames.map((n) => (
+                                    <span key={n} className="wel-chip" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                      {n}
+                                      <button type="button" className="wel-icon-btn" style={{ padding: 0 }} onClick={() => setDraft({ ...draft, matchNames: draft.matchNames.filter((x) => x !== n) })}><X size={11} /></button>
+                                    </span>
+                                  ))}
+                                  <select className="wel-scan-input" style={{ maxWidth: 260 }} value="" onChange={(e) => { if (e.target.value) setDraft({ ...draft, matchNames: [...draft.matchNames, e.target.value] }); }}>
+                                    <option value="">＋ 加入叫貨品項…</option>
+                                    {allOrderNames.filter((n) => !draft.matchNames.includes(n)).map((n) => <option key={n} value={n}>{n}{claimedNames.has(n) ? "（已對應其他列）" : ""}</option>)}
+                                  </select>
+                                </div>
+                              </Field>
                             </div>
                             <div style={{ display: "flex", gap: 8 }}>
                               <button type="button" className="wel-btn-primary" onClick={() => saveEdit(l.id)}>儲存修改</button>

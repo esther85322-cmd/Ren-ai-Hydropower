@@ -194,3 +194,20 @@ export function parseItemListText(text, catalog) {
   }
   return rows;
 }
+
+/** Suggest which of `candidates` (names) look like `query`: shared-bigram overlap, best first. */
+export function suggestNames(query, candidates, limit = 3) {
+  const qGrams = bigrams(normKey(query));
+  if (qGrams.size < 2) return [];
+  return candidates
+    .map((name) => {
+      const grams = bigrams(normKey(name));
+      let hit = 0;
+      grams.forEach((g) => { if (qGrams.has(g)) hit++; });
+      return { name, hit, score: hit / Math.min(qGrams.size, grams.size || 1) };
+    })
+    .filter((x) => x.hit >= 2 && x.score >= 0.6)
+    .sort((a, b) => b.score - a.score || b.hit - a.hit)
+    .slice(0, limit)
+    .map((x) => x.name);
+}
