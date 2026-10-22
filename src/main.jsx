@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import PasswordGate from "./PasswordGate.jsx";
 
 const style = document.createElement("style");
 style.textContent = `
@@ -13,6 +14,7 @@ document.head.appendChild(style);
 // （例如只負責記出工的師傅/家人）。用 dynamic import 讓這些路徑只下載自己的程式碼，
 // 不會把整個管理系統（含 Excel/Word 匯出、圖表等大型套件）一起下載下來，開啟速度快很多。
 const path = window.location.pathname.replace(/\/+$/, "");
+const isAdmin = !path.endsWith("/checkin") && !path.endsWith("/tasks");
 const page = path.endsWith("/checkin")
   ? import("./CheckinPage.jsx")
   : path.endsWith("/tasks")
@@ -23,7 +25,7 @@ const root = ReactDOM.createRoot(document.getElementById("root"));
 page.then(({ default: Page }) => {
   root.render(
     <React.StrictMode>
-      <Page />
+      {isAdmin ? <PasswordGate><Page /></PasswordGate> : <Page />}
     </React.StrictMode>
   );
 });

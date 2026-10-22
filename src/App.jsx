@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
 import { parseReceiptText, parseItemListText } from "./receiptParse";
+import { lockApp } from "./PasswordGate.jsx";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -1775,6 +1776,7 @@ export default function WaterElectricLedger() {
             ) : (
               <span className="wel-saving">✓ 資料已同步（共用）</span>
             )}
+            <button type="button" className="wel-btn-ghost" style={{ marginTop: 8, width: "100%" }} onClick={lockApp}>鎖定（需重新輸入密碼）</button>
           </div>
         </aside>
 
@@ -6928,7 +6930,10 @@ function SiteLandingPage({
             <h1 className="wel-landing-title" onClick={() => setEditingName(true)} title="點擊編輯專案名稱">{projectName}</h1>
           )}
         </div>
-        <div className="wel-eyebrow">案場列表 · SELECT A SITE</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div className="wel-eyebrow">案場列表 · SELECT A SITE</div>
+          <button type="button" className="wel-btn-ghost" onClick={lockApp}>鎖定</button>
+        </div>
       </div>
 
       <div className="wel-site-grid wel-site-grid-landing">
