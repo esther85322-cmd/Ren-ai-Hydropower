@@ -14,6 +14,7 @@ import {
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
 import { parseReceiptText, parseItemListText, suggestNames } from "./receiptParse";
 import { lockApp } from "./PasswordGate.jsx";
+import { parseEstimateWorkbook } from "./estimateExcel";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -1086,6 +1087,21 @@ export default function WaterElectricLedger() {
     const n = addEstimateLines(rows.map((r) => ({ ...r, note: "辨識匯入" })));
     if (n) showToast(`已加入 ${n} 個估價項目`);
   };
+  // Excel 匯入：可選擇先清掉這個案場先前 Excel 匯入的項目（避免重複匯入），手動新增與掃描的項目不會動到
+  const confirmExcelEstimate = (rows, replace) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能匯入估價單"); return false; }
+    const recs = rows.map((r) => ({
+      id: uid(), siteId: currentSiteId, categoryId: r.categoryId || categories[0]?.id || "", name: (r.name || "").trim(),
+      quantity: Number(r.quantity) || 0, unit: (r.unit || "").trim(), unitPrice: Number(r.unitPrice) || 0, note: (r.note || "").trim(), src: "excel",
+    }));
+    const kept = replace ? estimates.filter((l) => !(l.siteId === currentSiteId && l.src === "excel")) : estimates;
+    const next = [...kept, ...recs];
+    if (JSON.stringify(next).length > 900000) { showToast("估價項目太多，超過單一資料表的容量上限，請少選幾個工種分次匯入"); return false; }
+    setEstimates(next);
+    persistEstimates(next);
+    showToast(`已匯入 ${recs.length} 個估價項目`);
+    return true;
+  };
   const updateEstimateLine = (id, patch) => {
     const next = estimates.map((l) => (l.id === id ? { ...l, ...patch } : l));
     setEstimates(next);
@@ -1862,6 +1878,7 @@ export default function WaterElectricLedger() {
               updateEstimateLine={updateEstimateLine}
               deleteEstimateLine={deleteEstimateLine}
               confirmScannedEstimate={confirmScannedEstimate}
+              confirmExcelEstimate={confirmExcelEstimate}
               showToast={showToast}
             />
           )}
@@ -6085,15 +6102,157 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
   );
 }
 
+// 匯入簽約估價單 Excel（一個工種一張工作表）：解析出每一列「有單位、數量」的明細，讓你校對、改類別後再加入。
+function EstimateExcelImport({ categories, existingExcelCount, onConfirm, onClose, showToast }) {
+  const [phase, setPhase] = useState("pick");
+  const [fileName, setFileName] = useState("");
+  const [sheets, setSheets] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [active, setActive] = useState("");
+  const [useSheet, setUseSheet] = useState({});
+  const [withNoPrice, setWithNoPrice] = useState(false);
+  const [replace, setReplace] = useState(existingExcelCount > 0);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const fileRef = useRef(null);
+
+  const onPick = async (e) => {
+    const f = (e.target.files || [])[0];
+    e.target.value = "";
+    if (!f) return;
+    setError("");
+    setPhase("reading");
+    try {
+      const parsed = parseEstimateWorkbook(await f.arrayBuffer(), categories);
+      if (!parsed.rows.length) throw new Error("no rows");
+      setFileName(f.name);
+      setSheets(parsed.sheets);
+      setRows(parsed.rows);
+      setActive(parsed.sheets[0].name);
+      setUseSheet(Object.fromEntries(parsed.sheets.map((s) => [s.name, true])));
+      setPhase("review");
+    } catch (err) {
+      console.error("excel import failed", err);
+      setError("讀不出這個檔案的明細。請確認是估價單的 Excel（.xlsx），每個工種一張工作表，欄位依序為項次、工程項目、單位、數量、單價、總價。");
+      setPhase("pick");
+    }
+  };
+
+  const patchRow = (id, patch) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const removeRow = (id) => setRows((prev) => prev.filter((r) => r.id !== id));
+  const counted = (r) => useSheet[r.sheet] && r.include && (withNoPrice || r.hasPrice);
+  const chosen = rows.filter(counted);
+  const chosenTotal = chosen.reduce((s, r) => s + (Number(r.quantity) || 0) * (Number(r.unitPrice) || 0), 0);
+  const shown = rows.filter((r) => r.sheet === active);
+
+  const setSheetCategory = (categoryId) => setRows((prev) => prev.map((r) => (r.sheet === active ? { ...r, categoryId } : r)));
+  const confirm = async () => {
+    if (!chosen.length) { showToast("請至少勾選一列要加入的項目"); return; }
+    const bad = chosen.find((r) => !r.name.trim() || !(Number(r.quantity) > 0));
+    if (bad) { showToast(`「${bad.name || "（無名稱）"}」缺少名稱或數量`); return; }
+    setSaving(true);
+    try {
+      if (onConfirm(chosen, replace)) onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="wel-card wel-form" style={{ borderColor: "var(--teal)" }}>
+      <div className="wel-card-title-row">
+        <div className="wel-card-title"><FileSpreadsheet size={14} /> 匯入估價單 Excel → 校對 → 加入估價項目</div>
+        <button type="button" className="wel-btn-ghost" onClick={onClose}>關閉</button>
+      </div>
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: "none" }} onChange={onPick} />
+
+      {(phase === "pick" || phase === "reading") && (
+        <>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+            選擇簽約估價單的 Excel 檔。網頁會在你的電腦上直接讀取（檔案不會上傳），把每個工種裡有「單位、數量」的明細列出來，名稱前會自動接上它所屬的品名（例如「高籠型不銹鋼落水頭 φ3"」），並依名稱猜類別。一定會先讓你校對、修改，按確認後才會加入。
+          </div>
+          {error && <div className="wel-mismatch" style={{ marginBottom: 8 }}>{error}</div>}
+          <button type="button" className="wel-btn-primary" disabled={phase === "reading"} onClick={() => fileRef.current && fileRef.current.click()}>
+            <FileSpreadsheet size={15} /> {phase === "reading" ? "讀取中…" : "選擇 Excel 檔"}
+          </button>
+        </>
+      )}
+
+      {phase === "review" && (
+        <>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>檔案：{fileName}。勾選要匯入的工種，點工種可檢視、修改明細。金額以檔案中的「總價」為準。</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            {sheets.map((sh) => (
+              <div key={sh.name} onClick={() => setActive(sh.name)}
+                style={{ border: "1px solid " + (active === sh.name ? "var(--teal)" : "var(--border)"), borderRadius: 8, padding: "8px 10px", cursor: "pointer", minWidth: 150, background: active === sh.name ? "var(--surface2)" : undefined }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, cursor: "pointer" }} onClick={(e) => e.stopPropagation()}>
+                  <input type="checkbox" checked={!!useSheet[sh.name]} onChange={(e) => setUseSheet({ ...useSheet, [sh.name]: e.target.checked })} style={{ width: 16, height: 16 }} />
+                  {sh.label}
+                </label>
+                <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>{sh.count} 項 · {fmtMoney(sh.total)}</div>
+                {sh.noPrice > 0 && <div className="muted" style={{ fontSize: 11 }}>其中 {sh.noPrice} 項沒有單價</div>}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", margin: "0 0 10px", fontSize: 13, alignItems: "center" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={withNoPrice} onChange={(e) => setWithNoPrice(e.target.checked)} style={{ width: 16, height: 16 }} /> 也匯入沒有單價的項目（業主供料／另案發包，金額為 0）
+            </label>
+            {existingExcelCount > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} style={{ width: 16, height: 16 }} /> 先移除此案場先前用 Excel 匯入的 {existingExcelCount} 項（避免重複）
+              </label>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="muted" style={{ fontSize: 12 }}>目前檢視「{sheets.find((s) => s.name === active)?.label}」，整個工種改歸入：</span>
+            <select className="wel-scan-input" defaultValue="" onChange={(e) => { if (e.target.value) { setSheetCategory(e.target.value); e.target.value = ""; } }}>
+              <option value="">（選擇類別，套用到此工種全部列）</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div style={{ overflow: "auto", maxHeight: 460, border: "1px solid var(--border)", borderRadius: 8 }}>
+            <table className="wel-table">
+              <thead><tr><th></th><th>項目</th><th>類別</th><th className="right">數量</th><th>單位</th><th className="right">單價</th><th className="right">小計</th><th></th></tr></thead>
+              <tbody>
+                {shown.map((r) => (
+                  <tr key={r.id} style={!r.hasPrice ? { opacity: 0.7 } : undefined}>
+                    <td><input type="checkbox" checked={r.include} onChange={(e) => patchRow(r.id, { include: e.target.checked })} style={{ width: 16, height: 16 }} /></td>
+                    <td style={{ minWidth: 240 }}>
+                      <input className="wel-scan-input wel-scan-name" value={r.name} onChange={(e) => patchRow(r.id, { name: e.target.value })} />
+                      <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{r.note}{!r.hasPrice ? " · 無單價" : ""}</div>
+                    </td>
+                    <td>
+                      <select className="wel-scan-input" value={r.categoryId} onChange={(e) => patchRow(r.id, { categoryId: e.target.value })}>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                    </td>
+                    <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 74 }} value={r.quantity} onChange={(e) => patchRow(r.id, { quantity: e.target.value })} /></td>
+                    <td><input className="wel-scan-input" style={{ width: 52 }} value={r.unit} onChange={(e) => patchRow(r.id, { unit: e.target.value })} /></td>
+                    <td className="right"><input className="wel-scan-input" type="number" step="any" min="0" style={{ width: 96 }} value={r.unitPrice} onChange={(e) => patchRow(r.id, { unitPrice: e.target.value })} /></td>
+                    <td className="right mono">{fmtMoney((Number(r.quantity) || 0) * (Number(r.unitPrice) || 0))}</td>
+                    <td><button type="button" className="wel-icon-btn" title="刪除這一列" onClick={() => removeRow(r.id)}><Trash2 size={13} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="muted mono" style={{ fontSize: 12, margin: "8px 0" }}>已勾選 {chosen.length} 項，合計 {fmtMoney(chosenTotal)}（不含營業稅）</div>
+          <button type="button" className="wel-btn-primary" disabled={saving} onClick={confirm}>{saving ? "儲存中…" : `確認無誤，加入估價單（${chosen.length} 項）`}</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // 估價單：簽約估價單的項目，與實際叫貨對照（估價 − 實際；負數＝超支）。僅供對照，不計入任何總結算。
 function EstimateTab({
   estimates, orders, categories, catById, materialItems, siteById, isAllSites, sites, setCurrentSiteId, currentSiteId,
   estimateFiles, addEstimateFile, deleteEstimateFile, openContractFile,
-  addEstimateLine, updateEstimateLine, deleteEstimateLine, confirmScannedEstimate, showToast,
+  addEstimateLine, updateEstimateLine, deleteEstimateLine, confirmScannedEstimate, confirmExcelEstimate, showToast,
 }) {
   const emptyForm = { categoryId: categories[0]?.id || "", name: "", quantity: "", unit: "", unitPrice: "", note: "" };
   const [form, setForm] = useState(emptyForm);
   const [scanOpen, setScanOpen] = useState(false);
+  const [excelOpen, setExcelOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(null);
 
@@ -6212,8 +6371,16 @@ function EstimateTab({
               defaultCategoryId={form.categoryId} onConfirmEstimate={confirmScannedEstimate}
               onClose={() => setScanOpen(false)} showToast={showToast}
             />
+          ) : excelOpen ? (
+            <EstimateExcelImport
+              categories={categories} existingExcelCount={estimates.filter((l) => l.src === "excel").length}
+              onConfirm={confirmExcelEstimate} onClose={() => setExcelOpen(false)} showToast={showToast}
+            />
           ) : (
-            <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照辨識估價單（先校對再加入）</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className="wel-btn-primary" onClick={() => setExcelOpen(true)}><FileSpreadsheet size={14} /> 匯入估價單 Excel（先校對再加入）</button>
+              <button type="button" className="wel-btn-ghost" onClick={() => setScanOpen(true)}><Camera size={14} /> 拍照辨識估價單（先校對再加入）</button>
+            </div>
           )}
         </div>
       )}
