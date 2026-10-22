@@ -1879,6 +1879,9 @@ export default function WaterElectricLedger() {
               deleteEstimateLine={deleteEstimateLine}
               confirmScannedEstimate={confirmScannedEstimate}
               confirmExcelEstimate={confirmExcelEstimate}
+              laborActual={isAllSites
+                ? { wage: siteBreakdown.reduce((a, b) => a + b.labor, 0), contract: siteBreakdown.reduce((a, b) => a + b.contract, 0) }
+                : { wage: siteBreakdown.find((b) => b.id === currentSiteId)?.labor || 0, contract: siteBreakdown.find((b) => b.id === currentSiteId)?.contract || 0 }}
               showToast={showToast}
             />
           )}
@@ -6247,7 +6250,7 @@ function EstimateExcelImport({ categories, existingExcelCount, onConfirm, onClos
 function EstimateTab({
   estimates, orders, categories, catById, materialItems, siteById, isAllSites, sites, setCurrentSiteId, currentSiteId,
   estimateFiles, addEstimateFile, deleteEstimateFile, openContractFile,
-  addEstimateLine, updateEstimateLine, deleteEstimateLine, confirmScannedEstimate, confirmExcelEstimate, showToast,
+  addEstimateLine, updateEstimateLine, deleteEstimateLine, confirmScannedEstimate, confirmExcelEstimate, laborActual, showToast,
 }) {
   const emptyForm = { categoryId: categories[0]?.id || "", name: "", quantity: "", unit: "", unitPrice: "", note: "" };
   const [form, setForm] = useState(emptyForm);
@@ -6257,12 +6260,15 @@ function EstimateTab({
   const [draft, setDraft] = useState(null);
 
   const lineAmount = (l) => (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0);
-  const catName = (id) => catById[id]?.name || "未分類";
   const signed = (n) => (n >= 0 ? "+" : "") + fmtMoney(n);
   const tone = (n) => (n >= 0 ? "var(--green)" : "var(--red)");
 
+  // 人工類的「實際」＝師傅出工工資＋發包領款（不是叫貨）；沒有「人工」類別時獨立列一列
+  const laborCatId = categories.find((c) => /人工/.test(c.name))?.id || "__labor";
+  const laborSum = (laborActual?.wage || 0) + (laborActual?.contract || 0);
+  const catName = (id) => (id === "__labor" ? "人工（出工＋發包）" : catById[id]?.name || "未分類");
   const estTotal = estimates.reduce((s, l) => s + lineAmount(l), 0);
-  const actualTotal = orders.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  const actualTotal = orders.reduce((s, o) => s + (Number(o.amount) || 0), 0) + laborSum;
   const diffTotal = estTotal - actualTotal;
   const usedPct = estTotal > 0 ? (actualTotal / estTotal) * 100 : 0;
 
@@ -6271,8 +6277,9 @@ function EstimateTab({
     const row = (id) => m[id] || (m[id] = { id, est: 0, actual: 0 });
     estimates.forEach((l) => { row(l.categoryId || "").est += (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0); });
     orders.forEach((o) => { row(o.categoryId || "").actual += Number(o.amount) || 0; });
+    if (laborSum) row(laborCatId).actual += laborSum;
     return Object.values(m).filter((r) => r.est || r.actual).sort((a, b) => (b.est + b.actual) - (a.est + a.actual));
-  }, [estimates, orders]);
+  }, [estimates, orders, laborCatId, laborSum]);
 
   const actualByName = useMemo(() => {
     const m = {};
@@ -6323,12 +6330,12 @@ function EstimateTab({
   };
 
   const handleExportExcel = () => exportExcel("估價單對照", [
-    { name: "依類別對照", rows: [...byCategory.map((r) => ({ 類別: catName(r.id), 估價金額: r.est, 實際叫貨: r.actual, "差異（估價－實際）": r.est - r.actual })), { 類別: "合計", 估價金額: estTotal, 實際叫貨: actualTotal, "差異（估價－實際）": diffTotal }] },
+    { name: "依類別對照", rows: [...byCategory.map((r) => ({ 類別: catName(r.id), 估價金額: r.est, 實際: r.actual, "差異（估價－實際）": r.est - r.actual })), { 類別: "合計", 估價金額: estTotal, 實際: actualTotal, "差異（估價－實際）": diffTotal }] },
     { name: "逐項對照", rows: itemRows.map(({ line: l, matched, actual, names }) => ({ 類別: catName(l.categoryId), 項目: l.name, 對應叫貨品項: names.join("、"), 估價數量: Number(l.quantity) || 0, 單位: l.unit || "", 估價單價: Number(l.unitPrice) || 0, 估價金額: lineAmount(l), 實際數量: actual ? actual.qty : "", 實際金額: actual ? actual.amount : "", "差異金額（估價－實際）": actual ? lineAmount(l) - actual.amount : "", 備註: l.note || (matched ? "" : "未對應叫貨品項") })) },
   ]);
   const handleExportWord = () => exportWord("估價單對照", "估價單與實際叫貨對照", [
-    { title: "總覽", note: "差異 ＝ 估價 － 實際叫貨；負數代表超出估價。僅供對照，不計入總結算。", headers: ["項目", "金額"], rows: [["估價合計", fmtMoney(estTotal)], ["實際叫貨合計", fmtMoney(actualTotal)], ["差異（估價淨損益）", signed(diffTotal)]] },
-    { title: "依類別對照", headers: ["類別", "估價金額", "實際叫貨", "差異"], rows: byCategory.map((r) => [catName(r.id), fmtMoney(r.est), fmtMoney(r.actual), signed(r.est - r.actual)]) },
+    { title: "總覽", note: "差異 ＝ 估價 － 實際叫貨；負數代表超出估價。僅供對照，不計入總結算。", headers: ["項目", "金額"], rows: [["估價合計", fmtMoney(estTotal)], ["實際合計（叫貨＋出工＋發包）", fmtMoney(actualTotal)], ["差異（估價淨損益）", signed(diffTotal)]] },
+    { title: "依類別對照", headers: ["類別", "估價金額", "實際", "差異"], rows: byCategory.map((r) => [catName(r.id), fmtMoney(r.est), fmtMoney(r.actual), signed(r.est - r.actual)]) },
     { title: "逐項對照", headers: ["類別", "項目", "對應叫貨品項", "估價數量", "估價金額", "實際數量", "實際金額", "差異金額"], rows: itemRows.map(({ line: l, actual, names, actualUnit }) => [catName(l.categoryId), l.name, names.join("、") || "—", `${fmtNum(l.quantity)} ${l.unit || ""}`, fmtMoney(lineAmount(l)), actual ? `${fmtNum(actual.qty)} ${actualUnit || ""}` : "—", actual ? fmtMoney(actual.amount) : "—", actual ? signed(lineAmount(l) - actual.amount) : "—"]) },
   ]);
 
@@ -6343,13 +6350,13 @@ function EstimateTab({
         <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
       </div>
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>
-        把簽約估價單的項目放進來，系統會拿你之後叫的貨去對照。差異 ＝ 估價 － 實際叫貨，<b>負數代表超出估價</b>。這裡的數字只用來統計估價與淨損益，<b>不會計入「全部案場總結算」</b>。
+        把簽約估價單的項目放進來，系統會拿你之後叫的貨去對照。差異 ＝ 估價 － 實際（材料看叫貨，人工看師傅出工工資＋發包領款），<b>負數代表超出估價</b>。這裡的數字只用來統計估價與淨損益，<b>不會計入「全部案場總結算」</b>。
       </div>
       {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增估價項目與上傳估價單" />}
 
       <div className="wel-labor-summary">
         <div className="wel-labor-stat"><span>估價合計</span><b style={{ color: "var(--teal)" }}>{fmtMoney(estTotal)}</b></div>
-        <div className="wel-labor-stat"><span>實際叫貨合計</span><b style={{ color: "var(--amber)" }}>{fmtMoney(actualTotal)}</b></div>
+        <div className="wel-labor-stat"><span>實際合計（叫貨＋出工＋發包）</span><b style={{ color: "var(--amber)" }}>{fmtMoney(actualTotal)}</b></div>
         <div className="wel-labor-stat"><span>估價淨損益（估價 － 實際）</span><b style={{ color: tone(diffTotal) }}>{signed(diffTotal)}</b></div>
         <div className="wel-labor-stat"><span>已用估價</span><b>{estTotal > 0 ? usedPct.toFixed(1) + "%" : "—"}</b></div>
       </div>
@@ -6408,9 +6415,10 @@ function EstimateTab({
 
       <div className="wel-card" style={{ marginTop: 12, padding: 0, overflow: "hidden" }}>
         <div className="wel-card-title" style={{ padding: "12px 14px 0" }}><Scale size={14} /> 依類別對照</div>
+        <div className="muted" style={{ fontSize: 11.5, padding: "4px 14px 8px" }}>「{catName(laborCatId)}」的實際金額＝師傅出工工資 {fmtMoney(laborActual?.wage || 0)} ＋ 發包領款 {fmtMoney(laborActual?.contract || 0)}（再加上該類別的叫貨紀錄）；其他類別的實際金額是叫貨紀錄。</div>
         <div style={{ overflowX: "auto" }}>
           <table className="wel-table">
-            <thead><tr><th>類別</th><th className="right">估價金額</th><th className="right">實際叫貨</th><th className="right">差異（估價－實際）</th><th className="right">已用</th></tr></thead>
+            <thead><tr><th>類別</th><th className="right">估價金額</th><th className="right">實際</th><th className="right">差異（估價－實際）</th><th className="right">已用</th></tr></thead>
             <tbody>
               {byCategory.length === 0 && <tr><td colSpan={5}><Empty text="尚無估價項目，也沒有叫貨紀錄" /></td></tr>}
               {byCategory.map((r) => (
