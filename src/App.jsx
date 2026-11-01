@@ -5604,25 +5604,55 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
     const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
     setRange({ from: ym + "-01", to: ym + "-" + String(last).padStart(2, "0") });
   };
-  const amountFor = (id) => orders.filter((o) => o.categoryId === id).reduce((a, o) => a + (Number(o.amount) || 0), 0);
+  const taxOfOrder = (o) => (o.hasInvoice && o.applyTax ? (Number(o.amount) || 0) * (Number(o.taxRate) || 0) / 100 : 0);
+  const sumOrders = (list) => list.reduce((a, o) => ({ net: a.net + (Number(o.amount) || 0), gross: a.gross + (Number(o.amount) || 0) + taxOfOrder(o), count: a.count + 1 }), { net: 0, gross: 0, count: 0 });
+  const moneyText = (t) => (t.gross - t.net > 0.5 ? `${fmtMoney(t.net)}（含稅 ${fmtMoney(t.gross)}）` : fmtMoney(t.net));
+  const amountFor = (id) => sumOrders(orders.filter((o) => o.categoryId === id));
+  const amountOfItem = (name) => sumOrders(orders.filter((o) => o.itemName === name));
   const countFor = (id) => orders.filter((o) => o.categoryId === id).length + usages.filter((u) => u.categoryId === id).length;
   const [newMaterial, setNewMaterial] = useState({ name: "", unit: "", defaultPrice: "" });
   const sortedMaterials = useMemo(() => materialItems.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [materialItems]);
-  const orderCountFor = (name) => orders.filter((o) => o.itemName === name).length;
   const catIds = useMemo(() => new Set(categories.map((c) => c.id)), [categories]);
   const itemsOf = (id) => sortedMaterials.filter((m) => m.categoryId === id);
   const uncategorizedItems = sortedMaterials.filter((m) => !m.categoryId || !catIds.has(m.categoryId));
-  const itemChips = (list) => (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-      {list.map((m) => (
-        <span key={m.id} className="wel-chip">
-          {m.name}{m.unit ? `（${m.unit}）` : ""}{m.defaultPrice !== "" && m.defaultPrice != null ? ` · ${fmtMoney(m.defaultPrice)}` : ""}
-        </span>
-      ))}
-    </div>
-  );
   const [expandedCat, setExpandedCat] = useState(null);
   const [expandedMaterial, setExpandedMaterial] = useState(null);
+  const itemRow = (m, scope) => {
+    const key = scope + ":" + m.id;
+    const isOpen = expandedMaterial === key;
+    const t = amountOfItem(m.name);
+    return (
+              <div key={key}>
+                <div className="wel-manager-row">
+                  <button type="button" className="wel-expand-btn" onClick={() => setExpandedMaterial(isOpen ? null : key)} title="查詢時間軸紀錄">
+                    {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  <input
+                    className="wel-manager-name"
+                    value={m.name}
+                    onChange={(e) => updateMaterialItem(m.id, { name: e.target.value })}
+                    onBlur={(e) => { if (!e.target.value.trim()) updateMaterialItem(m.id, { name: m.name }); }}
+                  />
+                  <input className="wel-manager-mini" placeholder="單位" value={m.unit || ""} onChange={(e) => updateMaterialItem(m.id, { unit: e.target.value })} />
+                  <input className="wel-manager-mini" type="number" placeholder="單價" value={m.defaultPrice === "" || m.defaultPrice == null ? "" : m.defaultPrice} onChange={(e) => updateMaterialItem(m.id, { defaultPrice: e.target.value })} />
+                  <select className="wel-manager-mini" style={{ width: 110 }} value={m.categoryId || ""} onChange={(e) => updateMaterialItem(m.id, { categoryId: e.target.value })}>
+                    <option value="">未歸類</option>
+                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <span className="mono" style={{ fontSize: 11.5, minWidth: 130, textAlign: "right" }}>
+                    <span className="muted">{t.count} 筆</span> · <b>{fmtMoney(t.net)}</b>
+                    {t.gross - t.net > 0.5 && <div className="muted" style={{ fontSize: 10.5 }}>含稅 {fmtMoney(t.gross)}</div>}
+                  </span>
+                  <button type="button" className="wel-icon-btn" onClick={() => removeMaterialItem(m.id)}><Trash2 size={13} /></button>
+                </div>
+                {isOpen && (
+                  <div className="wel-timeline-wrap">
+                    <OrderTimeline items={orders.filter((o) => o.itemName === m.name)} autoOpen={filtered} />
+                  </div>
+                )}
+              </div>
+            );
+  };
 
   return (
     <div className="wel-page">
@@ -5667,15 +5697,15 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
                 </button>
                 <span className="wel-dot" style={{ background: c.color }} />
                 <ItemNameHeader name={c.name} onRename={(newName) => renameCategory(c.id, newName)} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{itemsOf(c.id).length} 項品項 · {countFor(c.id)} 筆紀錄{filtered ? ` · ${fmtMoney(amountFor(c.id))}` : ""}</span>
+                <span className="muted mono" style={{ fontSize: 12 }}>{itemsOf(c.id).length} 項品項 · {countFor(c.id)} 筆紀錄 · <b style={{ color: "var(--text)" }}>{moneyText(amountFor(c.id))}</b></span>
                 <button className="wel-icon-btn" onClick={() => removeCategory(c.id)}><X size={14} /></button>
               </div>
               {isOpen && (
                 <div className="wel-timeline-wrap">
-                  <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>這個類別底下的小項品項（{itemsOf(c.id).length}）</div>
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>這個類別底下的小項品項（{itemsOf(c.id).length}）：可直接修改名稱、單位、單價、類別，右邊是{filtered ? "這段期間" : "全部期間"}的筆數與金額，點左邊箭頭看逐筆紀錄</div>
                   {itemsOf(c.id).length === 0
                     ? <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>尚無品項，可在下方「品項清單」把品項的類別設成「{c.name}」，或用拍照掃描新增</div>
-                    : itemChips(itemsOf(c.id))}
+                    : <div className="wel-manager-list" style={{ maxHeight: "none", marginBottom: 10 }}>{itemsOf(c.id).map((m) => itemRow(m, c.id))}</div>}
                   {filtered && <ItemRangeSummary items={orders.filter((o) => o.categoryId === c.id)} />}
                   <OrderTimeline items={orders.filter((o) => o.categoryId === c.id)} autoOpen={filtered} />
                 </div>
@@ -5696,7 +5726,7 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
             {expandedCat === "__none" && (
               <div className="wel-timeline-wrap">
                 <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>還沒指定類別的品項，到下方「品項清單」的類別欄位歸類後，叫貨時就會依類別列出</div>
-                {itemChips(uncategorizedItems)}
+                <div className="wel-manager-list" style={{ maxHeight: "none" }}>{uncategorizedItems.map((m) => itemRow(m, "none"))}</div>
               </div>
             )}
           </div>
@@ -5733,37 +5763,7 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
         </div>
         <div className="wel-manager-list" style={{ marginTop: 12, maxHeight: "none" }}>
           {sortedMaterials.length === 0 && <div className="muted" style={{ fontSize: 12 }}>尚未建立任何品項</div>}
-          {sortedMaterials.map((m) => {
-            const isOpen = expandedMaterial === m.id;
-            return (
-              <div key={m.id}>
-                <div className="wel-manager-row">
-                  <button type="button" className="wel-expand-btn" onClick={() => setExpandedMaterial(isOpen ? null : m.id)} title="查詢時間軸紀錄">
-                    {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  </button>
-                  <input
-                    className="wel-manager-name"
-                    value={m.name}
-                    onChange={(e) => updateMaterialItem(m.id, { name: e.target.value })}
-                    onBlur={(e) => { if (!e.target.value.trim()) updateMaterialItem(m.id, { name: m.name }); }}
-                  />
-                  <input className="wel-manager-mini" placeholder="單位" value={m.unit || ""} onChange={(e) => updateMaterialItem(m.id, { unit: e.target.value })} />
-                  <input className="wel-manager-mini" type="number" placeholder="單價" value={m.defaultPrice === "" || m.defaultPrice == null ? "" : m.defaultPrice} onChange={(e) => updateMaterialItem(m.id, { defaultPrice: e.target.value })} />
-                  <select className="wel-manager-mini" style={{ width: 110 }} value={m.categoryId || ""} onChange={(e) => updateMaterialItem(m.id, { categoryId: e.target.value })}>
-                    <option value="">未歸類</option>
-                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                  <span className="muted mono" style={{ fontSize: 11.5, width: 64, textAlign: "right" }}>{orderCountFor(m.name)} 筆紀錄</span>
-                  <button type="button" className="wel-icon-btn" onClick={() => removeMaterialItem(m.id)}><Trash2 size={13} /></button>
-                </div>
-                {isOpen && (
-                  <div className="wel-timeline-wrap">
-                    <OrderTimeline items={orders.filter((o) => o.itemName === m.name)} autoOpen={filtered} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {sortedMaterials.map((m) => itemRow(m, "all"))}
         </div>
         <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>提示：改名稱會自動同步更新過去的叫貨/領用紀錄；設定類別後，之後在叫貨紀錄挑選這個品項會自動帶入該類別（不會更動過去已新增的紀錄）；刪除只會移除選單中的品項，不會刪除過去已經新增的叫貨紀錄。</div>
       </div>
