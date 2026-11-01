@@ -2642,16 +2642,19 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   };
 
   const taxOf = (o) => (o.hasInvoice && o.applyTax ? (Number(o.amount) || 0) * (Number(o.taxRate) || 0) / 100 : 0);
+  const grossOf = (o) => (Number(o.amount) || 0) + taxOf(o);
+  const sumOf = (list) => list.reduce((a, o) => ({ net: a.net + (Number(o.amount) || 0), tax: a.tax + taxOf(o), gross: a.gross + grossOf(o) }), { net: 0, tax: 0, gross: 0 });
+  const totalsText = (t) => (t.tax > 0 ? `未稅 ${fmtMoney(t.net)} ＋ 稅額 ${fmtMoney(t.tax)} ＝ 含稅 ${fmtMoney(t.gross)}` : fmtMoney(t.net));
   const exportRows = () => filteredOrders.map((o) => ({
     日期: o.date, 類別: catById[o.categoryId]?.name || "", 品項: o.itemName, 廠商: o.supplier || "",
     數量: Number(o.quantity) || 0, 單位: o.unit || "", 單價: Number(o.unitPrice) || 0, 金額: Number(o.amount) || 0,
-    發票: o.hasInvoice ? "有發票" : "無發票", 稅額: taxOf(o), 備註: o.note || "",
+    發票: o.hasInvoice ? "有發票" : "無發票", 稅額: taxOf(o), 含稅金額: grossOf(o), 備註: o.note || "",
   }));
   const handleExportExcel = () => exportExcel("叫貨紀錄", [{ name: "叫貨紀錄", rows: exportRows() }]);
   const handleExportWord = () => exportWord("叫貨紀錄", "叫貨紀錄", [{
     title: "叫貨紀錄",
-    headers: ["日期", "類別", "品項", "廠商", "數量", "單位", "單價", "金額", "發票", "稅額", "備註"],
-    rows: filteredOrders.map((o) => [o.date, catById[o.categoryId]?.name || "", o.itemName, o.supplier || "", o.quantity, o.unit || "", fmtMoney(o.unitPrice), fmtMoney(o.amount), o.hasInvoice ? "有發票" : "無發票", taxOf(o) ? fmtMoney(taxOf(o)) : "—", o.note || ""]),
+    headers: ["日期", "類別", "品項", "廠商", "數量", "單位", "單價", "金額", "發票", "稅額", "含稅金額", "備註"],
+    rows: filteredOrders.map((o) => [o.date, catById[o.categoryId]?.name || "", o.itemName, o.supplier || "", o.quantity, o.unit || "", fmtMoney(o.unitPrice), fmtMoney(o.amount), o.hasInvoice ? "有發票" : "無發票", taxOf(o) ? fmtMoney(taxOf(o)) : "—", fmtMoney(grossOf(o)), o.note || ""]),
   }]);
 
   return (
@@ -2825,7 +2828,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                       %
                     </span>
                     <span className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
-                      稅額：{fmtMoney((amount * (Number(orderForm.taxRate) || 0)) / 100)}
+                      稅額：{fmtMoney((amount * (Number(orderForm.taxRate) || 0)) / 100)}　含稅合計：{fmtMoney(amount + (amount * (Number(orderForm.taxRate) || 0)) / 100)}
                     </span>
                   </>
                 )}
@@ -2851,14 +2854,19 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
           </div>
         </div>
         {filteredOrders.length === 0 && <Empty text="尚未新增任何叫貨紀錄" />}
+        {filteredOrders.length > 0 && (
+          <div className="wel-floor-summary-line" style={{ margin: "4px 0 8px" }}>
+            合計 {filteredOrders.length} 筆：<span className="mono strong">{totalsText(sumOf(filteredOrders))}</span>
+          </div>
+        )}
         {attendanceByMonth(filteredOrders).map((mg) => {
-          const subtotal = mg.items.reduce((s, o) => s + (Number(o.amount) || 0), 0);
+          const subtotal = totalsText(sumOf(mg.items));
           const mOpen = !!openOrderMonths[mg.month];
           return (
             <div key={mg.month} className="wel-item-floor-group">
               <button type="button" className="wel-item-group-label wel-item-group-toggle" onClick={() => setOpenOrderMonths((prev) => ({ ...prev, [mg.month]: !prev[mg.month] }))}>
                 {mOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                {mg.month} · {mg.items.length} 筆 · {fmtMoney(subtotal)}
+                {mg.month} · {mg.items.length} 筆 · {subtotal}
               </button>
               {mOpen && (
                 <div style={{ overflowX: "auto" }}>
@@ -2866,7 +2874,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                     <thead>
                       <tr>
                         {isAllSites && <th>案場</th>}
-                        <th>日期</th><th>類別</th><th>品項</th><th>廠商</th><th className="right">數量</th><th className="right">單價</th><th className="right">金額</th><th>發票</th><th></th>
+                        <th>日期</th><th>類別</th><th>品項</th><th>廠商</th><th className="right">數量</th><th className="right">單價</th><th className="right">金額（未稅）</th><th className="right">含稅合計</th><th>發票</th><th></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2889,13 +2897,14 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                           <td className="right mono">{fmtNum(o.quantity)} {o.unit}</td>
                           <td className="right mono">{fmtMoney(o.unitPrice)}</td>
                           <td className="right mono strong">{fmtMoney(o.amount)}</td>
+                          <td className="right mono strong">{taxOf(o) > 0 ? fmtMoney(grossOf(o)) : <span className="muted">—</span>}</td>
                           <td>
                             {o.hasInvoice
                               ? <span className="wel-chip-info">有發票</span>
                               : <span className="wel-chip">無發票</span>}
                             {o.hasInvoice && o.applyTax && (
                               <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>
-                                稅額 {fmtMoney((Number(o.amount) || 0) * (Number(o.taxRate) || 0) / 100)}（{fmtNum(o.taxRate)}%）
+                                稅額 {fmtMoney(taxOf(o))}（{fmtNum(o.taxRate)}%）
                               </div>
                             )}
                           </td>
@@ -2903,7 +2912,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                         </tr>
                         {isOpen && editDraft && (
                           <tr onClick={(e) => e.stopPropagation()}>
-                            <td colSpan={isAllSites ? 9 : 8} style={{ padding: 0 }}>
+                            <td colSpan={isAllSites ? 11 : 10} style={{ padding: 0 }}>
                               <div className="wel-timeline-wrap">
                                 <div className="wel-form-grid">
                                   <Field label="日期">
