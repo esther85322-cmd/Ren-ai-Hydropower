@@ -2874,7 +2874,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                     <thead>
                       <tr>
                         {isAllSites && <th>案場</th>}
-                        <th>日期</th><th>類別</th><th>品項</th><th>廠商</th><th className="right">數量</th><th className="right">單價</th><th className="right">金額（未稅）</th><th className="right">含稅合計</th><th>發票</th><th></th>
+                        <th>日期</th><th>類別</th><th>品項</th><th>廠商</th><th className="right">數量</th><th className="right">單價</th><th className="right">金額（未稅）</th><th className="right">稅額</th><th className="right">總額（含稅）</th><th>發票</th><th></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2897,22 +2897,21 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                           <td className="right mono">{fmtNum(o.quantity)} {o.unit}</td>
                           <td className="right mono">{fmtMoney(o.unitPrice)}</td>
                           <td className="right mono strong">{fmtMoney(o.amount)}</td>
-                          <td className="right mono strong">{taxOf(o) > 0 ? fmtMoney(grossOf(o)) : <span className="muted">—</span>}</td>
+                          <td className="right mono muted">{taxOf(o) > 0 ? fmtMoney(taxOf(o)) : "—"}</td>
+                          <td className="right mono strong" style={{ color: "var(--amber)" }}>{fmtMoney(grossOf(o))}</td>
                           <td>
                             {o.hasInvoice
                               ? <span className="wel-chip-info">有發票</span>
                               : <span className="wel-chip">無發票</span>}
                             {o.hasInvoice && o.applyTax && (
-                              <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>
-                                稅額 {fmtMoney(taxOf(o))}（{fmtNum(o.taxRate)}%）
-                              </div>
+                              <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>稅率 {fmtNum(o.taxRate)}%</div>
                             )}
                           </td>
                           <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteOrder(o.id); }}><Trash2 size={14} /></button></td>
                         </tr>
                         {isOpen && editDraft && (
                           <tr onClick={(e) => e.stopPropagation()}>
-                            <td colSpan={isAllSites ? 11 : 10} style={{ padding: 0 }}>
+                            <td colSpan={isAllSites ? 12 : 11} style={{ padding: 0 }}>
                               <div className="wel-timeline-wrap">
                                 <div className="wel-form-grid">
                                   <Field label="日期">
@@ -2987,6 +2986,18 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                         </React.Fragment>
                         );
                       })}
+                      {(() => {
+                        const t = sumOf(mg.items);
+                        return (
+                          <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
+                            <td colSpan={isAllSites ? 7 : 6} className="strong">{mg.month} 合計（{mg.items.length} 筆）</td>
+                            <td className="right mono strong">{fmtMoney(t.net)}</td>
+                            <td className="right mono strong">{t.tax > 0 ? fmtMoney(t.tax) : "—"}</td>
+                            <td className="right mono strong" style={{ color: "var(--amber)" }}>{fmtMoney(t.gross)}</td>
+                            <td colSpan={2}></td>
+                          </tr>
+                        );
+                      })()}
                     </tbody>
                   </table>
                 </div>
