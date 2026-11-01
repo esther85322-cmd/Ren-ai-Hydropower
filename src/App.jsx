@@ -5579,8 +5579,23 @@ function MasterSummaryTab({
   );
 }
 
-function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, showToast }) {
+function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, showToast }) {
   const [scanOpen, setScanOpen] = useState(false);
+  // 日期查詢：起迄任填一邊也可以；有設定時，下面所有類別／品項的筆數、金額與時間軸都只看這段期間
+  const [range, setRange] = useState({ from: "", to: "" });
+  const filtered = !!(range.from || range.to);
+  const inRange = (r) => (!range.from || (r.date || "") >= range.from) && (!range.to || (r.date || "") <= range.to);
+  const orders = useMemo(() => allOrders.filter(inRange), [allOrders, range]);
+  const usages = useMemo(() => allUsages.filter(inRange), [allUsages, range]);
+  const monthRange = (offset) => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + offset);
+    const ym = d.toISOString().slice(0, 7);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    setRange({ from: ym + "-01", to: ym + "-" + String(last).padStart(2, "0") });
+  };
+  const amountFor = (id) => orders.filter((o) => o.categoryId === id).reduce((a, o) => a + (Number(o.amount) || 0), 0);
   const countFor = (id) => orders.filter((o) => o.categoryId === id).length + usages.filter((u) => u.categoryId === id).length;
   const [newMaterial, setNewMaterial] = useState({ name: "", unit: "", defaultPrice: "" });
   const sortedMaterials = useMemo(() => materialItems.slice().sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")), [materialItems]);
@@ -5616,6 +5631,22 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
           <button type="button" className="wel-btn-primary" style={{ alignSelf: "end" }} onClick={addCategory}><Plus size={15} /> 新增</button>
         </div>
       </div>
+      <div className="wel-card wel-form" style={{ marginBottom: 12 }}>
+        <div className="wel-card-title"><CalendarRange size={14} /> 用日期查詢各類別的紀錄</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <Field label="從"><input type="date" value={range.from} max={range.to || undefined} onChange={(e) => setRange({ ...range, from: e.target.value })} /></Field>
+          <Field label="到"><input type="date" value={range.to} min={range.from || undefined} onChange={(e) => setRange({ ...range, to: e.target.value })} /></Field>
+          <button type="button" className="wel-btn-ghost" onClick={() => monthRange(0)}>本月</button>
+          <button type="button" className="wel-btn-ghost" onClick={() => monthRange(-1)}>上個月</button>
+          <button type="button" className="wel-btn-ghost" onClick={() => setRange({ from: `${new Date().getFullYear()}-01-01`, to: `${new Date().getFullYear()}-12-31` })}>今年</button>
+          {filtered && <button type="button" className="wel-btn-ghost" onClick={() => setRange({ from: "", to: "" })}>清除日期</button>}
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          {filtered
+            ? <>查詢期間：<b>{range.from || "最早"}</b> ～ <b>{range.to || "最新"}</b>，共 {orders.length} 筆叫貨、{fmtMoney(orders.reduce((a, o) => a + (Number(o.amount) || 0), 0))}。點開下方類別，可看這段期間每個品項的數量與金額，以及逐筆紀錄。</>
+            : "選一段日期，下方每個類別就只顯示這段期間的筆數、金額與紀錄；不選就是全部。"}
+        </div>
+      </div>
       <div className="wel-cat-list">
         {categories.map((c) => {
           const isOpen = expandedCat === c.id;
@@ -5627,7 +5658,7 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
                 </button>
                 <span className="wel-dot" style={{ background: c.color }} />
                 <ItemNameHeader name={c.name} onRename={(newName) => renameCategory(c.id, newName)} />
-                <span className="muted mono" style={{ fontSize: 12 }}>{itemsOf(c.id).length} 項品項 · {countFor(c.id)} 筆紀錄</span>
+                <span className="muted mono" style={{ fontSize: 12 }}>{itemsOf(c.id).length} 項品項 · {countFor(c.id)} 筆紀錄{filtered ? ` · ${fmtMoney(amountFor(c.id))}` : ""}</span>
                 <button className="wel-icon-btn" onClick={() => removeCategory(c.id)}><X size={14} /></button>
               </div>
               {isOpen && (
@@ -5636,7 +5667,8 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
                   {itemsOf(c.id).length === 0
                     ? <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>尚無品項，可在下方「品項清單」把品項的類別設成「{c.name}」，或用拍照掃描新增</div>
                     : itemChips(itemsOf(c.id))}
-                  <OrderTimeline items={orders.filter((o) => o.categoryId === c.id)} />
+                  {filtered && <ItemRangeSummary items={orders.filter((o) => o.categoryId === c.id)} />}
+                  <OrderTimeline items={orders.filter((o) => o.categoryId === c.id)} autoOpen={filtered} />
                 </div>
               )}
             </div>
@@ -5717,7 +5749,7 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
                 </div>
                 {isOpen && (
                   <div className="wel-timeline-wrap">
-                    <OrderTimeline items={orders.filter((o) => o.itemName === m.name)} />
+                    <OrderTimeline items={orders.filter((o) => o.itemName === m.name)} autoOpen={filtered} />
                   </div>
                 )}
               </div>
@@ -5730,25 +5762,58 @@ function CategoriesTab({ categories, orders, usages, newCatName, setNewCatName, 
   );
 }
 
-function OrderTimeline({ items }) {
+// 查詢期間內，這個類別每個品項各叫了多少、花多少
+function ItemRangeSummary({ items }) {
+  const rows = useMemo(() => {
+    const m = {};
+    items.forEach((o) => {
+      const k = (o.itemName || "（未填品項）").trim();
+      const r = m[k] || (m[k] = { name: k, qty: 0, amount: 0, count: 0, unit: o.unit || "" });
+      r.qty += Number(o.quantity) || 0;
+      r.amount += Number(o.amount) || 0;
+      r.count += 1;
+    });
+    return Object.values(m).sort((a, b) => b.amount - a.amount);
+  }, [items]);
+  if (!rows.length) return null;
+  return (
+    <div style={{ overflowX: "auto", marginBottom: 10 }}>
+      <table className="wel-table">
+        <thead><tr><th>品項（這段期間）</th><th className="right">筆數</th><th className="right">數量</th><th className="right">金額</th></tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td>{r.name}</td>
+              <td className="right mono">{r.count}</td>
+              <td className="right mono">{fmtNum(r.qty)} {r.unit}</td>
+              <td className="right mono strong">{fmtMoney(r.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OrderTimeline({ items, autoOpen = false }) {
   const [openMonths, setOpenMonths] = useState({});
   const months = attendanceByMonth(items);
   const total = items.reduce((s, o) => s + (Number(o.amount) || 0), 0);
 
   if (items.length === 0) {
-    return <div className="wel-timeline"><div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>尚無叫貨紀錄</div></div>;
+    return <div className="wel-timeline"><div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>{autoOpen ? "這段期間沒有叫貨紀錄" : "尚無叫貨紀錄"}</div></div>;
   }
 
   return (
     <div className="wel-timeline">
       {months.map((mg) => {
         const subtotal = mg.items.reduce((s, o) => s + (Number(o.amount) || 0), 0);
-        const mOpen = !!openMonths[mg.month];
+        const mOpen = autoOpen ? openMonths[mg.month] !== false : !!openMonths[mg.month];
         return (
           <div key={mg.month} className="wel-item-floor-group">
             <button
               type="button" className="wel-item-group-label wel-item-group-toggle"
-              onClick={() => setOpenMonths((prev) => ({ ...prev, [mg.month]: !prev[mg.month] }))}
+              onClick={() => setOpenMonths((prev) => ({ ...prev, [mg.month]: !mOpen }))}
             >
               {mOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               {mg.month} · {mg.items.length} 筆 · {fmtMoney(subtotal)}
