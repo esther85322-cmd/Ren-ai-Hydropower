@@ -15,6 +15,7 @@ import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove 
 import { parseReceiptText, parseItemListText, suggestNames } from "./receiptParse";
 import { lockApp } from "./PasswordGate.jsx";
 import { parseEstimateWorkbook } from "./estimateExcel";
+import { parsePaymentSchedule } from "./scheduleExcel";
 
 const DEFAULT_CATEGORIES = [
   { id: "c1", name: "給水排水管路", color: "#4A90A4" },
@@ -34,6 +35,22 @@ for (let v = 1500; v <= 3500; v += 100) WAGE_OPTIONS.push(v);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const monthKey = (d) => (d || "").slice(0, 7);
+// ---- 甲方收款的票據：即期票當天入帳，N 天票從收票日起算 N 天，到期日當天起自動算入收款 ----
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const addDaysStr = (dateStr, days) => {
+  const [y, m, d] = (dateStr || "").split("-").map(Number);
+  if (!y || !m || !d) return dateStr || "";
+  const t = new Date(y, m - 1, d + (Number(days) || 0));
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+};
+const daysBetween = (fromStr, toStr) => {
+  const a = fromStr.split("-").map(Number), b = toStr.split("-").map(Number);
+  return Math.round((new Date(b[0], b[1] - 1, b[2]) - new Date(a[0], a[1] - 1, a[2])) / 86400000);
+};
+const payDueDate = (p) => (p.payType === "term" ? addDaysStr(p.date, p.days) : p.date);
+const isReceived = (p) => payDueDate(p) <= localToday();
+const receivedAmt = (p) => (isReceived(p) ? Number(p.amount) || 0 : 0);
+const payTypeText = (p) => (p.payType === "term" ? `${Number(p.days) || 0} 天票` : p.payType === "sight" ? "即期票" : "匯款／現金");
 const fmtMoney = (n) =>
   "NT$ " + Math.round(Number(n) || 0).toLocaleString("zh-TW");
 const fmtNum = (n) => {
@@ -181,6 +198,13 @@ export default function WaterElectricLedger() {
   const [payments, setPayments] = useState([]);
   const [floorItems, setFloorItems] = useState([]);
   const [clientPayments, setClientPayments] = useState([]);
+  const [clientAdditions, setClientAdditions] = useState([]);
+  // 每分鐘看一次日期有沒有換天；換天後到期的票據會自動重新計入收款
+  const [dayKey, setDayKey] = useState(localToday());
+  useEffect(() => {
+    const t = setInterval(() => setDayKey((k) => (k === localToday() ? k : localToday())), 60000);
+    return () => clearInterval(t);
+  }, []);
   const [clientTemplateRows, setClientTemplateRows] = useState([]);
   const [clientFloorItems, setClientFloorItems] = useState([]);
   const [contractWorkLogs, setContractWorkLogs] = useState([]);
@@ -213,6 +237,7 @@ export default function WaterElectricLedger() {
       const pay = data.payments ?? [];
       const fi = data.flooritems ?? [];
       const cp = data.clientpayments ?? [];
+      const cad = data.clientadditions ?? [];
       const ctr = data.clienttemplate ?? [];
       const cfi = data.clientflooritems ?? [];
       const cwl = data.contractworklogs ?? [];
@@ -253,6 +278,7 @@ export default function WaterElectricLedger() {
       setPayments(pay);
       setFloorItems(fi);
       setClientPayments(cp);
+      setClientAdditions(cad);
       setClientTemplateRows(ctr);
       setClientFloorItems(cfi);
       setContractWorkLogs(cwl);
@@ -339,6 +365,11 @@ export default function WaterElectricLedger() {
   const persistClientPayments = useCallback(async (list) => {
     setSaving(true);
     await storageSet("clientpayments", list);
+    setSaving(false);
+  }, []);
+  const persistClientAdditions = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("clientadditions", list);
     setSaving(false);
   }, []);
   const persistClientTemplateRows = useCallback(async (list) => {
@@ -462,9 +493,18 @@ export default function WaterElectricLedger() {
     () => (isAllSites ? clientPayments : clientPayments.filter((p) => p.siteId === currentSiteId)),
     [clientPayments, currentSiteId, isAllSites]
   );
+  // 收款只算「已入帳」的：現金／即期票收到就算，N 天票要等到期日
   const clientPaidTotal = useMemo(
-    () => siteClientPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0),
-    [siteClientPayments]
+    () => siteClientPayments.reduce((s, p) => s + receivedAmt(p), 0),
+    [siteClientPayments, dayKey]
+  );
+  const clientPendingTotal = useMemo(
+    () => siteClientPayments.reduce((s, p) => s + (isReceived(p) ? 0 : Number(p.amount) || 0), 0),
+    [siteClientPayments, dayKey]
+  );
+  const siteClientAdditions = useMemo(
+    () => (isAllSites ? clientAdditions : clientAdditions.filter((a) => a.siteId === currentSiteId)),
+    [clientAdditions, currentSiteId, isAllSites]
   );
   const siteClientTemplateRows = useMemo(
     () => clientTemplateRows.filter((r) => r.siteId === currentSiteId),
@@ -713,7 +753,7 @@ export default function WaterElectricLedger() {
     orders.forEach((o) => { bucket(o.siteId).material += Number(o.amount) || 0; });
     workLogs.forEach((l) => { bucket(l.siteId).labor += (Number(l.days) || 0) * workLogRate(l); });
     payments.forEach((p) => { bucket(p.siteId).contract += Number(p.amount) || 0; });
-    clientPayments.forEach((p) => { bucket(p.siteId).collected += Number(p.amount) || 0; });
+    clientPayments.forEach((p) => { bucket(p.siteId).collected += receivedAmt(p); });
     capitalContributions.forEach((c) => { bucket(c.siteId).capital += Number(c.amount) || 0; });
     otherExpenses.forEach((e) => { bucket(e.siteId).other += Number(e.amount) || 0; });
     fixedAssets.forEach((f) => { bucket(f.siteId).asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1); });
@@ -722,7 +762,7 @@ export default function WaterElectricLedger() {
     return Object.values(map)
       .map((s) => ({ ...s, total: s.material + s.labor + s.contract + s.other + s.asset, profit: s.collected - (s.material + s.labor + s.contract + s.other + s.asset) }))
       .sort((a, b) => b.total - a.total);
-  }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets]);
+  }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets, dayKey]);
 
   // ---- forms ----
   const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
@@ -735,7 +775,7 @@ export default function WaterElectricLedger() {
   const [contractForm, setContractForm] = useState(emptyContract);
   const emptyPayment = { contractId: "", date: todayStr(), amount: "", note: "" };
   const [paymentForm, setPaymentForm] = useState(emptyPayment);
-  const emptyClientPayment = { date: todayStr(), amount: "", item: "", note: "" };
+  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "" };
   const [clientPaymentForm, setClientPaymentForm] = useState(emptyClientPayment);
   const emptyDiscussion = { date: todayStr(), topic: "", note: "", resolved: false, result: "" };
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
@@ -1324,11 +1364,48 @@ export default function WaterElectricLedger() {
       showToast("請填寫「金額」後再新增甲方收款紀錄");
       return;
     }
+    if (clientPaymentForm.payType === "term" && !(Number(clientPaymentForm.days) > 0)) {
+      showToast("請填寫票據的「天數」（例如 30）");
+      return;
+    }
     const rec = { id: uid(), ...clientPaymentForm, siteId: currentSiteId, amount: Number(clientPaymentForm.amount) };
+    if (rec.payType === "term") rec.days = Number(rec.days); else delete rec.days;
+    if (!rec.additionId) delete rec.additionId;
     const next = [rec, ...clientPayments];
     setClientPayments(next);
     persistClientPayments(next);
     setClientPaymentForm(emptyClientPayment);
+    showToast(rec.payType === "term"
+      ? `已登記 ${rec.days} 天票，${payDueDate(rec)} 到期後自動算入收款`
+      : "已新增甲方收款紀錄");
+  };
+  // ---- 追加款項明細 ----
+  const addClientAddition = (rec) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增追加款項"); return false; }
+    if (!(rec.name || "").trim()) { showToast("請填寫追加項目名稱"); return false; }
+    if (!(Number(rec.amount) > 0)) { showToast("請填寫追加金額"); return false; }
+    const next = [...clientAdditions, { id: uid(), siteId: currentSiteId, date: rec.date || localToday(), name: rec.name.trim(), amount: Number(rec.amount), note: (rec.note || "").trim() }];
+    setClientAdditions(next);
+    persistClientAdditions(next);
+    showToast("已新增追加款項");
+    return true;
+  };
+  const updateClientAddition = (id, patch) => {
+    const next = clientAdditions.map((a) => (a.id === id ? { ...a, ...patch } : a));
+    setClientAdditions(next);
+    persistClientAdditions(next);
+  };
+  const deleteClientAddition = (id) => {
+    const a = clientAdditions.find((x) => x.id === id);
+    if (!a || !window.confirm(`確定要刪除追加款項「${a.name}」嗎？已登記的收款紀錄不會被刪除，只會取消和這個追加項目的對應。`)) return;
+    const next = clientAdditions.filter((x) => x.id !== id);
+    setClientAdditions(next);
+    persistClientAdditions(next);
+    if (clientPayments.some((p) => p.additionId === id)) {
+      const np = clientPayments.map((p) => (p.additionId === id ? { ...p, additionId: undefined } : p));
+      setClientPayments(np);
+      persistClientPayments(np);
+    }
   };
   const deleteClientPayment = (id) => {
     const next = clientPayments.filter((p) => p.id !== id);
@@ -1475,6 +1552,22 @@ export default function WaterElectricLedger() {
     setClientFloorItems(next);
     persistClientFloorItems(next);
     showToast(`已刪除「${itemName}」的所有樓層紀錄`);
+  };
+  // 匯入「付款比例表」Excel：每個（請款項目 × 樓層）一列，存進甲方樓層請款項目；重新匯入會先換掉上一次 Excel 匯入的
+  const importClientSchedule = (parsed, { replace, setTotal }) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能匯入付款比例表"); return false; }
+    const date = localToday();
+    const recs = parsed.items.map((it) => ({
+      id: uid(), siteId: currentSiteId, itemName: it.itemName, amount: Math.round(Number(it.amount) || 0),
+      percent: it.percent, date, note: "", floor: it.floor || "", src: "excel",
+    }));
+    const kept = replace ? clientFloorItems.filter((f) => !(f.siteId === currentSiteId && f.src === "excel")) : clientFloorItems;
+    const next = [...kept, ...recs];
+    setClientFloorItems(next);
+    persistClientFloorItems(next);
+    if (setTotal && parsed.total > 0) updateSiteClientPricing(currentSiteId, { clientTotalPrice: parsed.total });
+    showToast(`已匯入 ${recs.length} 筆付款比例明細`);
+    return true;
   };
   const addClientPaymentFromItem = (siteId, date, amount, note, itemId) => {
     if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增甲方收款紀錄"); return; }
@@ -2026,6 +2119,12 @@ export default function WaterElectricLedger() {
               deleteClientPayment={deleteClientPayment}
               updateClientPayment={updateClientPayment}
               clientPaidTotal={clientPaidTotal}
+              clientPendingTotal={clientPendingTotal}
+              additions={siteClientAdditions}
+              addClientAddition={addClientAddition}
+              updateClientAddition={updateClientAddition}
+              deleteClientAddition={deleteClientAddition}
+              importClientSchedule={importClientSchedule}
               projectGrandTotal={projectGrandTotal}
               profitLoss={profitLoss}
               isAllSites={isAllSites}
@@ -2052,7 +2151,7 @@ export default function WaterElectricLedger() {
               currentSiteName={siteById[currentSiteId]?.name}
               isAllSites={isAllSites}
               clientPaidTotal={clientPaidTotal}
-              clientPayments={siteClientPayments}
+              clientPayments={siteClientPayments.filter(isReceived)}
               clientFloorItems={siteClientFloorItems}
               totalCost={totalCost}
               laborTotalAllTime={laborTotalAllTime}
@@ -2250,7 +2349,7 @@ function SettlementCard({ siteBreakdown, drillData }) {
       contract: { headers: ["發包項目", "廠商", "備註"], list: d.payments, row: (p) => ({ cells: [contractById[p.contractId]?.name || "已刪除項目", contractById[p.contractId]?.contractor || "", p.note || ""], amount: Number(p.amount) || 0 }) },
       other: { headers: ["項目", "廠商", "備註"], list: d.otherExpenses, row: (e) => ({ cells: [e.itemName, e.supplier || "", e.note || ""], amount: Number(e.amount) || 0 }) },
       asset: { headers: ["品名", "數量 × 單價", "發票"], list: d.fixedAssets, row: (f) => ({ cells: [f.name, `${fmtNum(f.quantity)} × ${fmtMoney(f.amount)}`, f.hasInvoice ? "有發票" : "無發票"], amount: (Number(f.amount) || 0) * (Number(f.quantity) || 1) }) },
-      collected: { headers: ["請款項目", "備註"], list: d.clientPayments, row: (p) => ({ cells: [p.item || "", p.note || ""], amount: Number(p.amount) || 0 }) },
+      collected: { headers: ["請款項目", "備註"], list: d.clientPayments.filter(isReceived), row: (p) => ({ cells: [p.item || "", p.payType === "term" || p.payType === "sight" ? `${payTypeText(p)}（${payDueDate(p)} 入帳）` : (p.note || "")], amount: Number(p.amount) || 0 }) },
       capital: { headers: ["備註"], list: d.capitalContributions, row: (c) => ({ cells: [c.note || ""], amount: Number(c.amount) || 0 }) },
     };
     const def = defs[kind];
@@ -4926,9 +5025,187 @@ function ItemNameHeader({ name, onRename }) {
   );
 }
 
+// 追加款項明細：合約之外另外追加的工程款。收款時在「新增甲方收款」選對應的追加項目，這裡就會顯示已收／未收。
+function ClientAdditionsPanel({ additions, clientPayments, siteTotalPrice, additionTotal, isAllSites, addAddition, updateAddition, deleteAddition, payFor }) {
+  const [form, setForm] = useState({ date: localToday(), name: "", amount: "", note: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const rows = useMemo(() => additions.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).map((a) => {
+    const pays = clientPayments.filter((p) => p.additionId === a.id);
+    const received = pays.reduce((s, p) => s + receivedAmt(p), 0);
+    const pending = pays.reduce((s, p) => s + (isReceived(p) ? 0 : Number(p.amount) || 0), 0);
+    return { a, received, pending, outstanding: Math.max(0, (Number(a.amount) || 0) - received - pending) };
+  }), [additions, clientPayments]);
+  const receivedTotal = rows.reduce((s, r) => s + r.received, 0);
+  const submit = () => { if (addAddition(form)) setForm({ ...form, name: "", amount: "", note: "" }); };
+  const save = (id) => {
+    if (!draft.name.trim() || !(Number(draft.amount) > 0)) return;
+    updateAddition(id, { ...draft, name: draft.name.trim(), amount: Number(draft.amount) });
+    setEditingId(null);
+    setDraft(null);
+  };
+  return (
+    <div className="wel-card" style={{ marginBottom: 12 }}>
+      <div className="wel-card-title"><Plus size={14} /> 追加款項明細</div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>合約之外另外追加的項目。這裡只是明細與追蹤，追加款實際收到時，到下方「新增甲方收款」登記（可選對應的追加項目），才會算入收入。</div>
+      <div className="wel-labor-summary" style={{ marginBottom: 10 }}>
+        <div className="wel-labor-stat"><span>原合約總價</span><b>{siteTotalPrice > 0 ? fmtMoney(siteTotalPrice) : "—"}</b></div>
+        <div className="wel-labor-stat"><span>追加款項合計</span><b style={{ color: "var(--amber)" }}>{fmtMoney(additionTotal)}</b></div>
+        <div className="wel-labor-stat"><span>目前合約總額</span><b style={{ color: "var(--teal)" }}>{siteTotalPrice > 0 ? fmtMoney(siteTotalPrice + additionTotal) : "—"}</b></div>
+        <div className="wel-labor-stat"><span>追加款已收 / 未收</span><b>{fmtMoney(receivedTotal)} / {fmtMoney(Math.max(0, additionTotal - receivedTotal))}</b></div>
+      </div>
+      <div className="wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-form-grid">
+          <Field label="追加日期"><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
+          <Field label="追加項目" wide><input placeholder="例：2F 增設插座、加裝熱水管" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label="追加金額"><input type="number" min="0" step="any" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
+          <Field label="備註" wide><input placeholder="選填（例：甲方口頭追加、單號）" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submit}><Plus size={15} /> 新增追加款項</button>
+      </div>
+      <div style={{ overflowX: "auto", marginTop: 12 }}>
+        <table className="wel-table">
+          <thead><tr><th>日期</th><th>追加項目</th><th className="right">追加金額</th><th className="right">已收</th><th className="right">票據未到期</th><th className="right">尚未收</th><th></th></tr></thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={7}><Empty text="尚無追加款項" /></td></tr>}
+            {rows.map(({ a, received, pending, outstanding }) => {
+              const open = editingId === a.id;
+              return (
+                <React.Fragment key={a.id}>
+                  <tr className="wel-row-clickable" onClick={() => (open ? (setEditingId(null), setDraft(null)) : (setEditingId(a.id), setDraft({ date: a.date, name: a.name, amount: a.amount, note: a.note || "" })))}>
+                    <td className="mono">{a.date}</td>
+                    <td>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{a.name}</span>
+                      {a.note && <div className="muted" style={{ fontSize: 11.5, marginLeft: 18 }}>{a.note}</div>}
+                    </td>
+                    <td className="right mono strong">{fmtMoney(a.amount)}</td>
+                    <td className="right mono" style={{ color: "var(--teal)" }}>{fmtMoney(received)}</td>
+                    <td className="right mono" style={{ color: pending ? "var(--amber)" : undefined }}>{pending ? fmtMoney(pending) : "—"}</td>
+                    <td className="right mono strong">{fmtMoney(outstanding)}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <button type="button" className="wel-btn-ghost" title="到下方收款表單登記這個追加項目的收款" onClick={(e) => { e.stopPropagation(); payFor(a, outstanding); }}><Banknote size={13} /> 登記收款</button>
+                      <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteAddition(a.id); }}><Trash2 size={14} /></button>
+                    </td>
+                  </tr>
+                  {open && draft && (
+                    <tr onClick={(e) => e.stopPropagation()}>
+                      <td colSpan={7} style={{ padding: 0 }}>
+                        <div className="wel-timeline-wrap">
+                          <div className="wel-form-grid">
+                            <Field label="追加日期"><input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field>
+                            <Field label="追加項目" wide><input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></Field>
+                            <Field label="追加金額"><input type="number" min="0" step="any" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} /></Field>
+                            <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                          </div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button type="button" className="wel-btn-primary" onClick={() => save(a.id)}>儲存修改</button>
+                            <button type="button" className="wel-btn-ghost" onClick={() => { setEditingId(null); setDraft(null); }}>取消</button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// 匯入付款比例表 Excel（樓層 × 請款項目的 % 與金額）：先預覽，確認後存進「甲方樓層請款項目」
+function ClientScheduleImport({ hasExcel, currentTotal, onConfirm, onClose }) {
+  const [parsed, setParsed] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+  const [replace, setReplace] = useState(hasExcel);
+  const [setTotal, setSetTotal] = useState(true);
+  const fileRef = useRef(null);
+  const onPick = async (e) => {
+    const f = (e.target.files || [])[0];
+    e.target.value = "";
+    if (!f) return;
+    setError("");
+    try {
+      const r = parsePaymentSchedule(await f.arrayBuffer());
+      if (!r.items.length) throw new Error("empty");
+      setParsed(r);
+      setFileName(f.name);
+    } catch (err) {
+      console.error("schedule import failed", err);
+      setParsed(null);
+      setError("讀不出這個檔案。請確認是付款比例表：第一欄是樓別，上方是各請款階段，每個階段有「%」與「金額」兩欄。");
+    }
+  };
+  const byItem = useMemo(() => {
+    if (!parsed) return [];
+    const m = {};
+    parsed.items.forEach((it) => {
+      const r = m[it.itemName] || (m[it.itemName] = { name: it.itemName, pct: 0, amount: 0, count: 0, general: !it.floor });
+      r.pct += it.percent;
+      r.amount += it.amount;
+      r.count += 1;
+    });
+    return Object.values(m);
+  }, [parsed]);
+  const confirm = () => { if (onConfirm(parsed, { replace, setTotal })) onClose(); };
+  return (
+    <div className="wel-card wel-form" style={{ borderColor: "var(--teal)" }}>
+      <div className="wel-card-title-row">
+        <div className="wel-card-title"><FileSpreadsheet size={14} /> 匯入付款比例表 → 預覽 → 加入</div>
+        <button type="button" className="wel-btn-ghost" onClick={onClose}>關閉</button>
+      </div>
+      <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={onPick} />
+      {!parsed && (
+        <>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>選擇付款比例表的 Excel 檔（樓層 × 請款階段，各有 % 與金額）。網頁在你的電腦上讀取，不會上傳；會先列出結果讓你確認，按確認才會加入。</div>
+          {error && <div className="wel-mismatch" style={{ marginBottom: 8 }}>{error}</div>}
+          <button type="button" className="wel-btn-primary" onClick={() => fileRef.current && fileRef.current.click()}><FileSpreadsheet size={15} /> 選擇 Excel 檔</button>
+        </>
+      )}
+      {parsed && (
+        <>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>檔案：{fileName}{parsed.title ? `（${parsed.title}）` : ""}。共 {parsed.items.length} 筆（請款項目 × 樓層），百分比合計 {parsed.pctSum}%，金額合計 {fmtMoney(parsed.amountSum)}，承攬總價 {fmtMoney(parsed.total)}。</div>
+          <div style={{ overflowX: "auto", marginBottom: 8 }}>
+            <table className="wel-table">
+              <thead><tr><th>請款項目</th><th className="right">樓層數</th><th className="right">合計 %</th><th className="right">金額</th></tr></thead>
+              <tbody>
+                {byItem.map((r) => (
+                  <tr key={r.name}><td>{r.name}</td><td className="right mono">{r.general ? "一般" : r.count}</td><td className="right mono">{Math.round(r.pct * 100) / 100}%</td><td className="right mono">{fmtMoney(r.amount)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", margin: "8px 0", fontSize: 13 }}>
+            {parsed.total > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={setTotal} onChange={(e) => setSetTotal(e.target.checked)} style={{ width: 16, height: 16 }} />
+                把「甲方總工程價格」設為 {fmtMoney(parsed.total)}{currentTotal > 0 && currentTotal !== parsed.total ? `（目前是 ${fmtMoney(currentTotal)}）` : ""}
+              </label>
+            )}
+            {hasExcel && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} style={{ width: 16, height: 16 }} />
+                先移除上一次用 Excel 匯入的明細（避免重複）
+              </label>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="wel-btn-primary" onClick={confirm}>確認無誤，加入 {parsed.items.length} 筆</button>
+            <button type="button" className="wel-btn-ghost" onClick={() => setParsed(null)}>重選檔案</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ClientPaymentsTab({
   clientPayments, siteById, currentSite, clientPaymentForm, setClientPaymentForm, submitClientPayment, deleteClientPayment, updateClientPayment,
-  clientPaidTotal, projectGrandTotal, profitLoss, isAllSites, currentSiteId,
+  clientPaidTotal, clientPendingTotal, additions, addClientAddition, updateClientAddition, deleteClientAddition, importClientSchedule,
+  projectGrandTotal, profitLoss, isAllSites, currentSiteId,
   templateRows, floorItems, clientFloorTotal,
   addClientTemplateRow, addClientFloorItem, addClientFloorItemsBatch, updateClientFloorItem, deleteClientFloorItem,
   deleteClientFloorItemsByFloor, deleteClientFloorItemsByName,
@@ -4936,19 +5213,46 @@ function ClientPaymentsTab({
   sites, setCurrentSiteId, showToast,
 }) {
   const pct = projectGrandTotal > 0 ? Math.min(100, (clientPaidTotal / projectGrandTotal) * 100) : 0;
+  const [schedOpen, setSchedOpen] = useState(false);
   const [expandedPaymentId, setExpandedPaymentId] = useState(null);
   const [paymentDraft, setPaymentDraft] = useState(null);
-  const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, item: p.item || "", amount: p.amount, note: p.note || "" }); };
+  const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, item: p.item || "", amount: p.amount, note: p.note || "", payType: p.payType || "cash", days: p.days ?? 30, additionId: p.additionId || "" }); };
   const cancelEditPayment = () => { setExpandedPaymentId(null); setPaymentDraft(null); };
-  const saveEditPayment = (id) => { updateClientPayment(id, { ...paymentDraft, amount: Number(paymentDraft.amount) || 0 }); setExpandedPaymentId(null); setPaymentDraft(null); };
+  const saveEditPayment = (id) => {
+    if (paymentDraft.payType === "term" && !(Number(paymentDraft.days) > 0)) { showToast("請填寫票據的「天數」"); return; }
+    updateClientPayment(id, {
+      ...paymentDraft, amount: Number(paymentDraft.amount) || 0,
+      days: paymentDraft.payType === "term" ? Number(paymentDraft.days) : undefined,
+      additionId: paymentDraft.additionId || undefined,
+    });
+    setExpandedPaymentId(null);
+    setPaymentDraft(null);
+  };
+  const pendingChecks = useMemo(() => clientPayments.filter((p) => !isReceived(p)).sort((a, b) => (payDueDate(a) < payDueDate(b) ? -1 : 1)), [clientPayments]);
+  const statusOf = (p) => {
+    if (isReceived(p)) return { ok: true, text: p.payType === "term" || p.payType === "sight" ? `已入帳（${payDueDate(p)}）` : "已入帳" };
+    const left = daysBetween(localToday(), payDueDate(p));
+    return { ok: false, text: `未到期，${left} 天後（${payDueDate(p)}）入帳` };
+  };
+  const siteTotalPrice = Number(currentSite?.clientTotalPrice) || 0;
+  const additionTotal = additions.reduce((s, a) => s + (Number(a.amount) || 0), 0);
+  const payTypeSelect = (value, onChange) => (
+    <select value={value} onChange={onChange}>
+      <option value="cash">匯款／現金（當天入帳）</option>
+      <option value="sight">即期票（當天入帳）</option>
+      <option value="term">期票（幾天後到期才入帳）</option>
+    </select>
+  );
   const sortedClientPayments = useMemo(() => clientPayments.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [clientPayments]);
   const handleExportExcel = () => exportExcel("甲方收款", [
-    { name: "收款紀錄", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 金額: Number(p.amount) || 0, 備註: p.note || "" })) },
+    { name: "收款紀錄", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 收款方式: payTypeText(p), 入帳日: payDueDate(p), 狀態: isReceived(p) ? "已入帳" : "未到期", 金額: Number(p.amount) || 0, 備註: p.note || "" })) },
+    { name: "追加款項", rows: additions.map((a) => ({ 日期: a.date, 項目: a.name, 追加金額: Number(a.amount) || 0, 已收: clientPayments.filter((p) => p.additionId === a.id).reduce((x, p) => x + receivedAmt(p), 0), 備註: a.note || "" })) },
     { name: "樓層請款項目", rows: floorItems.map((f) => ({ 日期: f.date, 項目: f.itemName, 樓層: f.floor || "", 百分比: f.percent === undefined ? "" : f.percent, 金額: Number(f.amount) || 0 })) },
   ]);
   const handleExportWord = () => exportWord("甲方收款", "甲方清款紀錄", [
     { title: "收款摘要", headers: ["項目", "金額"], rows: [["甲方累計收款", fmtMoney(clientPaidTotal)], ["專案總支出", fmtMoney(projectGrandTotal)], [profitLoss >= 0 ? "毛利" : "虧損", fmtMoney(profitLoss)]] },
-    { title: "收款紀錄", headers: ["日期", "請款項目", "金額", "備註"], rows: clientPayments.map((p) => [p.date, p.item || "", fmtMoney(p.amount), p.note || ""]) },
+    { title: "收款紀錄", headers: ["日期", "請款項目", "方式", "入帳日", "狀態", "金額", "備註"], rows: clientPayments.map((p) => [p.date, p.item || "", payTypeText(p), payDueDate(p), isReceived(p) ? "已入帳" : "未到期", fmtMoney(p.amount), p.note || ""]) },
+    { title: "追加款項", headers: ["日期", "項目", "追加金額", "已收", "備註"], rows: additions.map((a) => [a.date, a.name, fmtMoney(a.amount), fmtMoney(clientPayments.filter((p) => p.additionId === a.id).reduce((x, p) => x + receivedAmt(p), 0)), a.note || ""]) },
     { title: "樓層請款項目", headers: ["日期", "項目", "樓層", "百分比", "金額"], rows: floorItems.map((f) => [f.date, f.itemName, f.floor || "—", f.percent === undefined ? "—" : `${f.percent}%`, fmtMoney(f.amount)]) },
   ]);
   return (
@@ -4966,10 +5270,11 @@ function ClientPaymentsTab({
       {/* Collections vs total spend */}
       <div className="wel-meter-card">
         <div className="wel-meter-label">
-          <Wallet size={14} /> 甲方累計收款 vs 專案總支出
+          <Wallet size={14} /> 甲方累計收款（已入帳）vs 專案總支出
         </div>
         <div className="wel-meter-sub" style={{ marginTop: 0, marginBottom: 12 }}>
           <span>甲方累計收款：<b style={{ color: "var(--teal)" }}>{fmtMoney(clientPaidTotal)}</b></span>
+          {clientPendingTotal > 0 && <span>票據未到期：<b style={{ color: "var(--amber)" }}>{fmtMoney(clientPendingTotal)}</b></span>}
           <span>專案總支出：<b>{fmtMoney(projectGrandTotal)}</b></span>
           <span>{profitLoss >= 0 ? "毛利" : "虧損"}：<b style={{ color: profitLoss >= 0 ? "var(--green)" : "var(--red)" }}>{profitLoss >= 0 ? "+" : ""}{fmtMoney(profitLoss)}</b></span>
         </div>
@@ -4979,13 +5284,32 @@ function ClientPaymentsTab({
         <div className="wel-floor-summary-line muted" style={{ marginTop: 6 }}>
           收款進度：{pct.toFixed(1)}%（相對於總支出）
         </div>
+        {pendingChecks.length > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12.5 }}>
+            <div className="muted" style={{ marginBottom: 4 }}>未到期的票據（到期日當天自動算入收款，不用再手動登記）：</div>
+            {pendingChecks.map((p) => (
+              <div key={p.id} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <span className="mono">{payDueDate(p)}</span>
+                <span>{p.item || "（未填項目）"}</span>
+                <span className="muted">{payTypeText(p)}</span>
+                <b className="mono" style={{ color: "var(--amber)" }}>{fmtMoney(p.amount)}</b>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
+      <ClientAdditionsPanel
+        additions={additions} clientPayments={clientPayments} siteTotalPrice={siteTotalPrice} additionTotal={additionTotal} isAllSites={isAllSites}
+        addAddition={addClientAddition} updateAddition={updateClientAddition} deleteAddition={deleteClientAddition}
+        payFor={(a, outstanding) => { setClientPaymentForm({ ...clientPaymentForm, item: `追加：${a.name}`, amount: outstanding > 0 ? outstanding : "", additionId: a.id }); window.scrollTo({ top: document.getElementById("wel-client-form")?.offsetTop ? document.getElementById("wel-client-form").offsetTop - 20 : 0, behavior: "smooth" }); }}
+      />
+
       {/* New collection entry */}
-      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+      <div id="wel-client-form" className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
         <div className="wel-card-title"><Wallet size={14} /> 新增甲方收款</div>
         <div className="wel-form-grid">
-          <Field label="收款日期">
+          <Field label="收款日期／收票日">
             <input type="date" value={clientPaymentForm.date} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, date: e.target.value })} />
           </Field>
           <Field label="請款項目 / 期別" wide>
@@ -5007,6 +5331,28 @@ function ClientPaymentsTab({
           <Field label="金額">
             <input type="number" min="0" step="any" value={clientPaymentForm.amount} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, amount: e.target.value })} />
           </Field>
+          <Field label="收款方式">
+            {payTypeSelect(clientPaymentForm.payType, (e) => setClientPaymentForm({ ...clientPaymentForm, payType: e.target.value }))}
+          </Field>
+          {clientPaymentForm.payType === "term" && (
+            <Field label="票期（天）" wide>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <input type="number" min="1" step="1" style={{ width: 90 }} value={clientPaymentForm.days} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, days: e.target.value })} />
+                {[30, 45, 60, 90, 120].map((n) => <button key={n} type="button" className="wel-chip-btn" onClick={() => setClientPaymentForm({ ...clientPaymentForm, days: n })}>{n} 天</button>)}
+                <span className="muted mono" style={{ fontSize: 12 }}>
+                  {Number(clientPaymentForm.days) > 0 ? `到期日 ${addDaysStr(clientPaymentForm.date, clientPaymentForm.days)}，當天自動算入收款` : "請填天數"}
+                </span>
+              </div>
+            </Field>
+          )}
+          {additions.length > 0 && (
+            <Field label="對應追加款項（選填）">
+              <select value={clientPaymentForm.additionId || ""} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, additionId: e.target.value })}>
+                <option value="">一般請款（不對應追加）</option>
+                {additions.map((a) => <option key={a.id} value={a.id}>{a.name}（{fmtMoney(a.amount)}）</option>)}
+              </select>
+            </Field>
+          )}
           <Field label="備註" wide>
             <input placeholder="選填" value={clientPaymentForm.note} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, note: e.target.value })} />
           </Field>
@@ -5018,10 +5364,10 @@ function ClientPaymentsTab({
       <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
         <table className="wel-table">
           <thead>
-            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>請款項目</th><th className="right">金額</th><th>備註</th><th></th></tr>
+            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>請款項目</th><th>方式</th><th className="right">金額</th><th>入帳狀態</th><th>備註</th><th></th></tr>
           </thead>
           <tbody>
-            {sortedClientPayments.length === 0 && (<tr><td colSpan={isAllSites ? 6 : 5}><Empty text="尚無甲方收款紀錄" /></td></tr>)}
+            {sortedClientPayments.length === 0 && (<tr><td colSpan={isAllSites ? 8 : 7}><Empty text="尚無甲方收款紀錄" /></td></tr>)}
             {sortedClientPayments.map((p) => {
               const isOpen = expandedPaymentId === p.id;
               return (
@@ -5035,16 +5381,18 @@ function ClientPaymentsTab({
                     {p.item || "—"}
                   </span>
                 </td>
-                <td className="right mono strong" style={{ color: "var(--teal)" }}>{fmtMoney(p.amount)}</td>
+                <td className="muted">{payTypeText(p)}</td>
+                <td className="right mono strong" style={{ color: isReceived(p) ? "var(--teal)" : "var(--amber)" }}>{fmtMoney(p.amount)}</td>
+                <td>{(() => { const st = statusOf(p); return <span className={st.ok ? "wel-chip-info" : "wel-chip"} style={st.ok ? undefined : { color: "var(--amber)" }}>{st.text}</span>; })()}</td>
                 <td className="muted">{p.note || "—"}</td>
                 <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteClientPayment(p.id); }}><Trash2 size={14} /></button></td>
               </tr>
               {isOpen && paymentDraft && (
                 <tr onClick={(e) => e.stopPropagation()}>
-                  <td colSpan={isAllSites ? 6 : 5} style={{ padding: 0 }}>
+                  <td colSpan={isAllSites ? 8 : 7} style={{ padding: 0 }}>
                     <div className="wel-timeline-wrap">
                       <div className="wel-form-grid">
-                        <Field label="收款日期">
+                        <Field label="收款日期／收票日">
                           <input type="date" value={paymentDraft.date} onChange={(e) => setPaymentDraft({ ...paymentDraft, date: e.target.value })} />
                         </Field>
                         <Field label="請款項目 / 期別" wide>
@@ -5053,6 +5401,23 @@ function ClientPaymentsTab({
                         <Field label="金額">
                           <input type="number" min="0" step="any" value={paymentDraft.amount} onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })} />
                         </Field>
+                        <Field label="收款方式">
+                          {payTypeSelect(paymentDraft.payType, (e) => setPaymentDraft({ ...paymentDraft, payType: e.target.value }))}
+                        </Field>
+                        {paymentDraft.payType === "term" && (
+                          <Field label="票期（天）">
+                            <input type="number" min="1" step="1" value={paymentDraft.days} onChange={(e) => setPaymentDraft({ ...paymentDraft, days: e.target.value })} />
+                            <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>到期日 {Number(paymentDraft.days) > 0 ? addDaysStr(paymentDraft.date, paymentDraft.days) : "—"}</div>
+                          </Field>
+                        )}
+                        {additions.length > 0 && (
+                          <Field label="對應追加款項">
+                            <select value={paymentDraft.additionId} onChange={(e) => setPaymentDraft({ ...paymentDraft, additionId: e.target.value })}>
+                              <option value="">一般請款</option>
+                              {additions.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                            </select>
+                          </Field>
+                        )}
                         <Field label="備註" wide>
                           <input value={paymentDraft.note} onChange={(e) => setPaymentDraft({ ...paymentDraft, note: e.target.value })} />
                         </Field>
@@ -5074,7 +5439,14 @@ function ClientPaymentsTab({
 
       {/* Client-side floor billing items — same design as 發包廠商: item -> floor -> percent */}
       <div className="wel-card">
-        <div className="wel-card-title"><Layers size={14} /> 甲方樓層請款項目</div>
+        <div className="wel-card-title"><Layers size={14} /> 甲方樓層請款項目（付款比例明細）</div>
+        {!isAllSites && (
+          <div style={{ marginBottom: 12 }}>
+            {schedOpen
+              ? <ClientScheduleImport hasExcel={floorItems.some((f) => f.src === "excel")} currentTotal={siteTotalPrice} onConfirm={importClientSchedule} onClose={() => setSchedOpen(false)} showToast={showToast} />
+              : <button type="button" className="wel-btn-ghost" onClick={() => setSchedOpen(true)}><FileSpreadsheet size={14} /> 匯入付款比例表 Excel（先預覽再加入）</button>}
+          </div>
+        )}
         <ClientFloorItemsPanel
           siteId={currentSiteId}
           site={currentSite}
@@ -5274,7 +5646,7 @@ function ClientFloorItemsPanel({
               <div className="wel-pipe-fill" style={{ width: `${Math.max(usedPct, clientFloorTotal > 0 ? 3 : 0)}%`, background: usedPct >= 100 ? "var(--green)" : "var(--amber)" }} />
             </div>
             <div className="wel-floor-summary-line muted" style={{ marginTop: 6 }}>
-              已請款項目合計：<span className="mono">{fmtMoney(clientFloorTotal)}</span>（約 {usedPct.toFixed(1)}% 總工程價格）
+              請款比例明細合計：<span className="mono">{fmtMoney(clientFloorTotal)}</span>（約 {usedPct.toFixed(1)}% 總工程價格）
             </div>
           </>
         )}
