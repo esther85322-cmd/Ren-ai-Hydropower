@@ -50,7 +50,11 @@ const daysBetween = (fromStr, toStr) => {
 const TERM_DAYS = [7, 14, 15, 30, 45, 60, 75, 90, 120, 150, 180];
 const payDueDate = (p) => (p.payType === "term" ? addDaysStr(p.date, p.days) : p.date);
 const isReceived = (p) => payDueDate(p) <= localToday();
-const receivedAmt = (p) => (isReceived(p) ? Number(p.amount) || 0 : 0);
+// 保固款：每筆收款可依比例自動暫扣；實收 ＝ 請款金額 － 保固款。保固款返還那筆（releasesWarranty）不再扣
+const warrantyOf = (p) => (p.releasesWarranty ? 0 : Number(p.warrantyAmount) || 0);
+const netAmt = (p) => (Number(p.amount) || 0) - warrantyOf(p);
+const receivedAmt = (p) => (isReceived(p) ? netAmt(p) : 0);
+const WARRANTY_RATES = Array.from({ length: 11 }, (_, i) => i);
 const payTypeText = (p) => (p.payType === "term" ? `${Number(p.days) || 0} 天票` : p.payType === "sight" ? "即期票" : "匯款／現金");
 const fmtMoney = (n) =>
   "NT$ " + Math.round(Number(n) || 0).toLocaleString("zh-TW");
@@ -508,9 +512,18 @@ export default function WaterElectricLedger() {
     [siteClientPayments, dayKey]
   );
   const clientPendingTotal = useMemo(
-    () => siteClientPayments.reduce((s, p) => s + (isReceived(p) ? 0 : Number(p.amount) || 0), 0),
+    () => siteClientPayments.reduce((s, p) => s + (isReceived(p) ? 0 : netAmt(p)), 0),
     [siteClientPayments, dayKey]
   );
+  // 保固款：已入帳的暫扣累計、已返還、目前還留在甲方的，以及未到期票據之後會扣的
+  const warrantyStats = useMemo(() => {
+    let deducted = 0, released = 0, upcoming = 0;
+    siteClientPayments.forEach((p) => {
+      if (isReceived(p)) { deducted += warrantyOf(p); if (p.releasesWarranty) released += Number(p.amount) || 0; }
+      else upcoming += warrantyOf(p);
+    });
+    return { deducted, released, held: deducted - released, upcoming };
+  }, [siteClientPayments, dayKey]);
   const siteClientAdditions = useMemo(
     () => (isAllSites ? clientAdditions : clientAdditions.filter((a) => a.siteId === currentSiteId)),
     [clientAdditions, currentSiteId, isAllSites]
@@ -754,7 +767,7 @@ export default function WaterElectricLedger() {
   const profitLoss = clientPaidTotal - projectGrandTotal;
 
   const siteBreakdown = useMemo(() => {
-    const blank = (id, name) => ({ id, name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0, other: 0, asset: 0 });
+    const blank = (id, name) => ({ id, name, material: 0, labor: 0, contract: 0, collected: 0, capital: 0, other: 0, asset: 0, warranty: 0 });
     const map = {};
     sites.forEach((s) => (map[s.id] = blank(s.id, s.name)));
     // 紀錄所屬的案場已被刪除時，獨立列成一列，避免總數對不起來
@@ -762,7 +775,11 @@ export default function WaterElectricLedger() {
     orders.forEach((o) => { bucket(o.siteId).material += Number(o.amount) || 0; });
     workLogs.forEach((l) => { bucket(l.siteId).labor += (Number(l.days) || 0) * workLogRate(l); });
     payments.forEach((p) => { bucket(p.siteId).contract += Number(p.amount) || 0; });
-    clientPayments.forEach((p) => { bucket(p.siteId).collected += receivedAmt(p); });
+    clientPayments.forEach((p) => {
+      const b = bucket(p.siteId);
+      b.collected += receivedAmt(p);
+      if (isReceived(p)) b.warranty += warrantyOf(p) - (p.releasesWarranty ? Number(p.amount) || 0 : 0);
+    });
     capitalContributions.forEach((c) => { bucket(c.siteId).capital += Number(c.amount) || 0; });
     otherExpenses.forEach((e) => { bucket(e.siteId).other += Number(e.amount) || 0; });
     fixedAssets.forEach((f) => { bucket(f.siteId).asset += (Number(f.amount) || 0) * (Number(f.quantity) || 1); });
@@ -784,7 +801,7 @@ export default function WaterElectricLedger() {
   const [contractForm, setContractForm] = useState(emptyContract);
   const emptyPayment = { contractId: "", date: todayStr(), amount: "", note: "" };
   const [paymentForm, setPaymentForm] = useState(emptyPayment);
-  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "", split: false, amount1: "", payType2: "term", days2: 30 };
+  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "", split: false, amount1: "", payType2: "term", days2: 30, warrantyRate: null, releasesWarranty: false };
   const [clientPaymentForm, setClientPaymentForm] = useState(emptyClientPayment);
   const emptyDiscussion = { date: todayStr(), topic: "", note: "", resolved: false, result: "" };
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
@@ -1384,9 +1401,11 @@ export default function WaterElectricLedger() {
     }
     if (parts.some((pt) => pt.payType === "term" && !(Number(pt.days) > 0))) { showToast("請填寫票據的「天數」"); return; }
     const splitId = parts.length > 1 ? uid() : undefined;
-    const { split, amount1, payType2, days2, payType, days, amount, ...base } = f;
+    const { split, amount1, payType2, days2, payType, days, amount, warrantyRate, releasesWarranty, ...base } = f;
+    const rate = releasesWarranty ? 0 : Number(warrantyRate ?? siteById[currentSiteId]?.warrantyRate ?? 0) || 0;
     const recs = parts.map((pt, i) => {
-      const rec = { id: uid(), ...base, siteId: currentSiteId, amount: pt.amount, payType: pt.payType };
+      const rec = { id: uid(), ...base, siteId: currentSiteId, amount: pt.amount, payType: pt.payType, warrantyRate: rate, warrantyAmount: Math.round((pt.amount * rate) / 100) };
+      if (releasesWarranty) rec.releasesWarranty = true;
       if (pt.payType === "term") rec.days = Number(pt.days);
       if (!rec.additionId) delete rec.additionId;
       if (splitId) { rec.splitId = splitId; rec.note = [`分票 ${i + 1}/${parts.length}`, base.note].filter(Boolean).join("，"); }
@@ -1396,7 +1415,9 @@ export default function WaterElectricLedger() {
     setClientPayments(next);
     persistClientPayments(next);
     setClientPaymentForm(emptyClientPayment);
-    showToast(recs.length > 1
+    const wTotal = recs.reduce((a, r) => a + (r.warrantyAmount || 0), 0);
+    if (wTotal > 0) showToast(`已登記，並自動暫扣保固款 ${fmtMoney(wTotal)}（${rate}%），實收 ${fmtMoney(total - wTotal)}`);
+    else showToast(recs.length > 1
       ? `已登記一筆款項分成兩張：${recs.map((r) => (r.payType === "term" ? `${r.days} 天票 ${fmtMoney(r.amount)}` : `${payTypeText(r)} ${fmtMoney(r.amount)}`)).join("、")}`
       : recs[0].payType === "term" ? `已登記 ${recs[0].days} 天票，${payDueDate(recs[0])} 到期後自動算入收款` : "已新增甲方收款紀錄");
   };
@@ -2168,6 +2189,7 @@ export default function WaterElectricLedger() {
               updateClientPayment={updateClientPayment}
               clientPaidTotal={clientPaidTotal}
               clientPendingTotal={clientPendingTotal}
+              warrantyStats={warrantyStats}
               additions={siteClientAdditions}
               addClientAddition={addClientAddition}
               updateClientAddition={updateClientAddition}
@@ -2366,7 +2388,7 @@ const EXPENSE_KINDS = ["material", "labor", "contract", "other", "asset"];
 // 每個數字都能點開，看到是哪些紀錄加起來的。
 function SettlementCard({ siteBreakdown, drillData }) {
   const sum = (k) => siteBreakdown.reduce((acc, b) => acc + (b[k] || 0), 0);
-  const T = { id: "all", collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital") };
+  const T = { id: "all", collected: sum("collected"), material: sum("material"), labor: sum("labor"), contract: sum("contract"), other: sum("other"), asset: sum("asset"), total: sum("total"), profit: sum("profit"), capital: sum("capital"), warranty: sum("warranty") };
   const signed = (n) => (n >= 0 ? "+" : "") + fmtMoney(n);
   const color = (n) => (n >= 0 ? "var(--green)" : "var(--red)");
   const [drill, setDrill] = useState(drillData && drillData.initial ? drillData.initial : null);
@@ -2403,7 +2425,7 @@ function SettlementCard({ siteBreakdown, drillData }) {
       contract: { headers: ["發包項目", "廠商", "備註"], list: d.payments, row: (p) => ({ cells: [contractById[p.contractId]?.name || "已刪除項目", contractById[p.contractId]?.contractor || "", p.note || ""], amount: Number(p.amount) || 0 }) },
       other: { headers: ["項目", "廠商", "備註"], list: d.otherExpenses, row: (e) => ({ cells: [e.itemName, e.supplier || "", e.note || ""], amount: Number(e.amount) || 0 }) },
       asset: { headers: ["品名", "數量 × 單價", "發票"], list: d.fixedAssets, row: (f) => ({ cells: [f.name, `${fmtNum(f.quantity)} × ${fmtMoney(f.amount)}`, f.hasInvoice ? "有發票" : "無發票"], amount: (Number(f.amount) || 0) * (Number(f.quantity) || 1) }) },
-      collected: { headers: ["請款項目", "備註"], list: d.clientPayments.filter(isReceived), row: (p) => ({ cells: [p.item || "", p.payType === "term" || p.payType === "sight" ? `${payTypeText(p)}（${payDueDate(p)} 入帳）` : (p.note || "")], amount: Number(p.amount) || 0 }) },
+      collected: { headers: ["請款項目", "備註"], list: d.clientPayments.filter(isReceived), row: (p) => ({ cells: [p.item || "", [p.payType === "term" || p.payType === "sight" ? `${payTypeText(p)}（${payDueDate(p)} 入帳）` : (p.note || ""), p.releasesWarranty ? "保固款返還" : warrantyOf(p) > 0 ? `請款 ${fmtMoney(p.amount)}、扣保固 ${fmtMoney(warrantyOf(p))}` : ""].filter(Boolean).join("；")], amount: receivedAmt(p) }) },
       capital: { headers: ["備註"], list: d.capitalContributions, row: (c) => ({ cells: [c.note || ""], amount: Number(c.amount) || 0 }) },
     };
     const def = defs[kind];
@@ -2524,6 +2546,7 @@ function SettlementCard({ siteBreakdown, drillData }) {
         {tile("總支出", fmtMoney(T.total), "var(--amber)", "all", "total")}
         {tile("總淨損益（收入 － 總支出）", signed(T.profit), color(T.profit), "all", "profit")}
         {tile("總投入成本（參考）", fmtMoney(T.capital), "var(--teal)", "all", "capital")}
+        <div className="wel-labor-stat" title="甲方每次請款暫扣、尚未返還的保固款，不計入收入"><span>保固款累計暫扣（參考，未計入收入）</span><b style={{ color: "var(--amber)" }}>{fmtMoney(T.warranty)}</b></div>
       </div>
       <div style={{ overflowX: "auto", marginTop: 14 }}>
         <table className="wel-table">
@@ -5132,7 +5155,7 @@ function ClientAdditionsPanel({ additions, clientPayments, siteTotalPrice, addit
   const [draft, setDraft] = useState(null);
   const rows = useMemo(() => additions.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).map((a) => {
     const pays = clientPayments.filter((p) => p.additionId === a.id);
-    const received = pays.reduce((s, p) => s + receivedAmt(p), 0);
+    const received = pays.reduce((s, p) => s + (isReceived(p) ? Number(p.amount) || 0 : 0), 0);
     const pending = pays.reduce((s, p) => s + (isReceived(p) ? 0 : Number(p.amount) || 0), 0);
     return { a, received, pending, outstanding: Math.max(0, (Number(a.amount) || 0) - received - pending) };
   }), [additions, clientPayments]);
@@ -5304,7 +5327,7 @@ function ClientScheduleImport({ hasExcel, currentTotal, onConfirm, onClose }) {
 
 function ClientPaymentsTab({
   clientPayments, siteById, currentSite, clientPaymentForm, setClientPaymentForm, submitClientPayment, deleteClientPayment, updateClientPayment,
-  clientPaidTotal, clientPendingTotal, additions, addClientAddition, updateClientAddition, deleteClientAddition, importClientSchedule,
+  clientPaidTotal, clientPendingTotal, warrantyStats, additions, addClientAddition, updateClientAddition, deleteClientAddition, importClientSchedule,
   projectGrandTotal, profitLoss, isAllSites, currentSiteId,
   templateRows, floorItems, clientFloorTotal,
   addClientTemplateRow, addClientFloorItem, addClientFloorItemsBatch, updateClientFloorItem, deleteClientFloorItem,
@@ -5316,12 +5339,15 @@ function ClientPaymentsTab({
   const [schedOpen, setSchedOpen] = useState(false);
   const [expandedPaymentId, setExpandedPaymentId] = useState(null);
   const [paymentDraft, setPaymentDraft] = useState(null);
-  const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, item: p.item || "", amount: p.amount, note: p.note || "", payType: p.payType || "cash", days: p.days ?? 30, additionId: p.additionId || "" }); };
+  const startEditPayment = (p) => { setExpandedPaymentId(p.id); setPaymentDraft({ date: p.date, item: p.item || "", amount: p.amount, note: p.note || "", payType: p.payType || "cash", days: p.days ?? 30, additionId: p.additionId || "", warrantyRate: p.warrantyRate ?? 0, releasesWarranty: !!p.releasesWarranty }); };
   const cancelEditPayment = () => { setExpandedPaymentId(null); setPaymentDraft(null); };
   const saveEditPayment = (id) => {
     if (paymentDraft.payType === "term" && !(Number(paymentDraft.days) > 0)) { showToast("請填寫票據的「天數」"); return; }
+    const amt = Number(paymentDraft.amount) || 0;
+    const rate = paymentDraft.releasesWarranty ? 0 : Number(paymentDraft.warrantyRate) || 0;
     updateClientPayment(id, {
-      ...paymentDraft, amount: Number(paymentDraft.amount) || 0,
+      ...paymentDraft, amount: amt, warrantyRate: rate, warrantyAmount: Math.round((amt * rate) / 100),
+      releasesWarranty: paymentDraft.releasesWarranty || undefined,
       days: paymentDraft.payType === "term" ? Number(paymentDraft.days) : undefined,
       additionId: paymentDraft.additionId || undefined,
     });
@@ -5335,17 +5361,21 @@ function ClientPaymentsTab({
     return { ok: false, text: `未到期，${left} 天後（${payDueDate(p)}）入帳` };
   };
   const siteTotalPrice = Number(currentSite?.clientTotalPrice) || 0;
+  const siteWarrantyRate = Number(currentSite?.warrantyRate) || 0;
+  const formRate = clientPaymentForm.releasesWarranty ? 0 : Number(clientPaymentForm.warrantyRate ?? siteWarrantyRate) || 0;
+  const formAmount = Number(clientPaymentForm.amount) || 0;
+  const formWarranty = Math.round((formAmount * formRate) / 100);
   const additionTotal = additions.reduce((s, a) => s + (Number(a.amount) || 0), 0);
   const sortedClientPayments = useMemo(() => clientPayments.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [clientPayments]);
   const handleExportExcel = () => exportExcel("甲方收款", [
-    { name: "收款紀錄", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 收款方式: payTypeText(p), 入帳日: payDueDate(p), 狀態: isReceived(p) ? "已入帳" : "未到期", 金額: Number(p.amount) || 0, 備註: p.note || "" })) },
-    { name: "追加款項", rows: additions.map((a) => ({ 日期: a.date, 項目: a.name, 追加金額: Number(a.amount) || 0, 已收: clientPayments.filter((p) => p.additionId === a.id).reduce((x, p) => x + receivedAmt(p), 0), 備註: a.note || "" })) },
+    { name: "收款紀錄", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 收款方式: payTypeText(p), 入帳日: payDueDate(p), 狀態: isReceived(p) ? "已入帳" : "未到期", 請款金額: Number(p.amount) || 0, "保固款比例（%）": p.releasesWarranty ? "返還" : (p.warrantyRate ?? 0), 扣保固款: warrantyOf(p), 實收: netAmt(p), 備註: p.note || "" })) },
+    { name: "追加款項", rows: additions.map((a) => ({ 日期: a.date, 項目: a.name, 追加金額: Number(a.amount) || 0, 已收: clientPayments.filter((p) => p.additionId === a.id).reduce((x, p) => x + (isReceived(p) ? Number(p.amount) || 0 : 0), 0), 備註: a.note || "" })) },
     { name: "樓層請款項目", rows: floorItems.map((f) => ({ 日期: f.date, 項目: f.itemName, 樓層: f.floor || "", 百分比: f.percent === undefined ? "" : f.percent, 金額: Number(f.amount) || 0 })) },
   ]);
   const handleExportWord = () => exportWord("甲方收款", "甲方清款紀錄", [
     { title: "收款摘要", headers: ["項目", "金額"], rows: [["甲方累計收款", fmtMoney(clientPaidTotal)], ["專案總支出", fmtMoney(projectGrandTotal)], [profitLoss >= 0 ? "毛利" : "虧損", fmtMoney(profitLoss)]] },
-    { title: "收款紀錄", headers: ["日期", "請款項目", "方式", "入帳日", "狀態", "金額", "備註"], rows: clientPayments.map((p) => [p.date, p.item || "", payTypeText(p), payDueDate(p), isReceived(p) ? "已入帳" : "未到期", fmtMoney(p.amount), p.note || ""]) },
-    { title: "追加款項", headers: ["日期", "項目", "追加金額", "已收", "備註"], rows: additions.map((a) => [a.date, a.name, fmtMoney(a.amount), fmtMoney(clientPayments.filter((p) => p.additionId === a.id).reduce((x, p) => x + receivedAmt(p), 0)), a.note || ""]) },
+    { title: "收款紀錄", headers: ["日期", "請款項目", "方式", "入帳日", "狀態", "請款金額", "扣保固款", "實收", "備註"], rows: clientPayments.map((p) => [p.date, p.item || "", payTypeText(p), payDueDate(p), isReceived(p) ? "已入帳" : "未到期", fmtMoney(p.amount), warrantyOf(p) ? fmtMoney(warrantyOf(p)) : "—", fmtMoney(netAmt(p)), p.note || ""]) },
+    { title: "追加款項", headers: ["日期", "項目", "追加金額", "已收", "備註"], rows: additions.map((a) => [a.date, a.name, fmtMoney(a.amount), fmtMoney(clientPayments.filter((p) => p.additionId === a.id).reduce((x, p) => x + (isReceived(p) ? Number(p.amount) || 0 : 0), 0)), a.note || ""]) },
     { title: "樓層請款項目", headers: ["日期", "項目", "樓層", "百分比", "金額"], rows: floorItems.map((f) => [f.date, f.itemName, f.floor || "—", f.percent === undefined ? "—" : `${f.percent}%`, fmtMoney(f.amount)]) },
   ]);
   return (
@@ -5363,11 +5393,12 @@ function ClientPaymentsTab({
       {/* Collections vs total spend */}
       <div className="wel-meter-card">
         <div className="wel-meter-label">
-          <Wallet size={14} /> 甲方累計收款（已入帳）vs 專案總支出
+          <Wallet size={14} /> 甲方累計收款（已入帳，已扣保固款）vs 專案總支出
         </div>
         <div className="wel-meter-sub" style={{ marginTop: 0, marginBottom: 12 }}>
           <span>甲方累計收款：<b style={{ color: "var(--teal)" }}>{fmtMoney(clientPaidTotal)}</b></span>
-          {clientPendingTotal > 0 && <span>票據未到期：<b style={{ color: "var(--amber)" }}>{fmtMoney(clientPendingTotal)}</b></span>}
+          {clientPendingTotal > 0 && <span>票據未到期（實收）：<b style={{ color: "var(--amber)" }}>{fmtMoney(clientPendingTotal)}</b></span>}
+          {warrantyStats.held > 0 && <span>保固款累計暫扣：<b style={{ color: "var(--amber)" }}>{fmtMoney(warrantyStats.held)}</b></span>}
           <span>專案總支出：<b>{fmtMoney(projectGrandTotal)}</b></span>
           <span>{profitLoss >= 0 ? "毛利" : "虧損"}：<b style={{ color: profitLoss >= 0 ? "var(--green)" : "var(--red)" }}>{profitLoss >= 0 ? "+" : ""}{fmtMoney(profitLoss)}</b></span>
         </div>
@@ -5385,10 +5416,35 @@ function ClientPaymentsTab({
                 <span className="mono">{payDueDate(p)}</span>
                 <span>{p.item || "（未填項目）"}</span>
                 <span className="muted">{payTypeText(p)}</span>
-                <b className="mono" style={{ color: "var(--amber)" }}>{fmtMoney(p.amount)}</b>
+                <b className="mono" style={{ color: "var(--amber)" }}>{fmtMoney(netAmt(p))}</b>
+                {warrantyOf(p) > 0 && <span className="muted">（請款 {fmtMoney(p.amount)}，扣保固 {fmtMoney(warrantyOf(p))}）</span>}
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      <div className="wel-card" style={{ marginBottom: 12 }}>
+        <div className="wel-card-title"><PiggyBank size={14} /> 保固款（甲方每次請款自動暫扣）</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
+          <label className="wel-mini-label">這個案場預設扣款比例（滾輪）
+            <select value={siteWarrantyRate} disabled={isAllSites} onChange={(e) => updateSiteClientPricing(currentSiteId, { warrantyRate: Number(e.target.value) })}>
+              {WARRANTY_RATES.map((r) => <option key={r} value={r}>{r === 0 ? "不扣保固款" : `${r}%`}</option>)}
+            </select>
+          </label>
+          <span className="muted" style={{ fontSize: 12, flex: 1, minWidth: 220 }}>之後每筆新增的甲方收款，會依這個比例自動扣保固款（每一筆也可以在表單改比例）。每筆收款記下當時的比例，之後改預設不會影響已登記的收款。保固款在甲方手上，返還前不算收入。</span>
+        </div>
+        <div className="wel-labor-summary">
+          <div className="wel-labor-stat"><span>累計已扣保固款</span><b style={{ color: "var(--amber)" }}>{fmtMoney(warrantyStats.deducted)}</b></div>
+          <div className="wel-labor-stat"><span>已返還</span><b style={{ color: "var(--teal)" }}>{fmtMoney(warrantyStats.released)}</b></div>
+          <div className="wel-labor-stat"><span>目前還留在甲方</span><b>{fmtMoney(warrantyStats.held)}</b></div>
+          <div className="wel-labor-stat"><span>未到期票據之後會扣</span><b className="muted">{fmtMoney(warrantyStats.upcoming)}</b></div>
+        </div>
+        {!isAllSites && warrantyStats.held > 0 && (
+          <button type="button" className="wel-btn-ghost" style={{ marginTop: 10 }}
+            onClick={() => { setClientPaymentForm({ ...clientPaymentForm, item: "保固款返還", amount: warrantyStats.held, releasesWarranty: true, warrantyRate: 0, additionId: "" }); document.getElementById("wel-client-form")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
+            <Banknote size={13} /> 登記保固款返還（把留著的 {fmtMoney(warrantyStats.held)} 帶到收款表單）
+          </button>
         )}
       </div>
 
@@ -5421,8 +5477,25 @@ function ClientPaymentsTab({
               </div>
             )}
           </Field>
-          <Field label="金額">
+          <Field label={clientPaymentForm.releasesWarranty ? "返還金額" : "請款金額（扣保固款前）"}>
             <input type="number" min="0" step="any" value={clientPaymentForm.amount} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, amount: e.target.value })} />
+          </Field>
+          <Field label="保固款扣款（滾輪）">
+            {clientPaymentForm.releasesWarranty ? (
+              <div>
+                <div className="wel-amount-preview">保固款返還（不再扣）</div>
+                <button type="button" className="wel-btn-ghost" style={{ marginTop: 4 }} onClick={() => setClientPaymentForm({ ...clientPaymentForm, releasesWarranty: false, warrantyRate: null })}>取消，改成一般收款</button>
+              </div>
+            ) : (
+              <>
+                <select value={formRate} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, warrantyRate: Number(e.target.value) })}>
+                  {WARRANTY_RATES.map((r) => <option key={r} value={r}>{r === 0 ? "不扣" : `${r}%`}</option>)}
+                </select>
+                <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>
+                  {formRate > 0 && formAmount > 0 ? `扣保固款 ${fmtMoney(formWarranty)}（${formRate}%），實收 ${fmtMoney(formAmount - formWarranty)}` : formRate > 0 ? `會自動扣 ${formRate}%` : "這筆不扣保固款"}
+                </div>
+              </>
+            )}
           </Field>
           <Field label={clientPaymentForm.split ? "票期滾輪①（第 1 張）" : "票期滾輪"}>
             <TermSelect payType={clientPaymentForm.payType} days={clientPaymentForm.days} baseDate={clientPaymentForm.date}
@@ -5470,10 +5543,10 @@ function ClientPaymentsTab({
       <div className="wel-card" style={{ padding: 0, overflow: "hidden" }}>
         <table className="wel-table">
           <thead>
-            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>請款項目</th><th>方式</th><th className="right">金額</th><th>入帳狀態</th><th>備註</th><th></th></tr>
+            <tr>{isAllSites && <th>案場</th>}<th>日期</th><th>請款項目</th><th>方式</th><th className="right">請款金額</th><th className="right">扣保固款</th><th className="right">實收</th><th>入帳狀態</th><th>備註</th><th></th></tr>
           </thead>
           <tbody>
-            {sortedClientPayments.length === 0 && (<tr><td colSpan={isAllSites ? 8 : 7}><Empty text="尚無甲方收款紀錄" /></td></tr>)}
+            {sortedClientPayments.length === 0 && (<tr><td colSpan={isAllSites ? 10 : 9}><Empty text="尚無甲方收款紀錄" /></td></tr>)}
             {sortedClientPayments.map((p) => {
               const isOpen = expandedPaymentId === p.id;
               return (
@@ -5488,14 +5561,16 @@ function ClientPaymentsTab({
                   </span>
                 </td>
                 <td className="muted">{payTypeText(p)}</td>
-                <td className="right mono strong" style={{ color: isReceived(p) ? "var(--teal)" : "var(--amber)" }}>{fmtMoney(p.amount)}</td>
+                <td className="right mono">{fmtMoney(p.amount)}</td>
+                <td className="right mono muted">{p.releasesWarranty ? "返還" : warrantyOf(p) > 0 ? `${fmtMoney(warrantyOf(p))}（${p.warrantyRate}%）` : "—"}</td>
+                <td className="right mono strong" style={{ color: isReceived(p) ? "var(--teal)" : "var(--amber)" }}>{fmtMoney(netAmt(p))}</td>
                 <td>{(() => { const st = statusOf(p); return <span className={st.ok ? "wel-chip-info" : "wel-chip"} style={st.ok ? undefined : { color: "var(--amber)" }}>{st.text}</span>; })()}</td>
                 <td className="muted">{p.note || "—"}</td>
                 <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteClientPayment(p.id); }}><Trash2 size={14} /></button></td>
               </tr>
               {isOpen && paymentDraft && (
                 <tr onClick={(e) => e.stopPropagation()}>
-                  <td colSpan={isAllSites ? 8 : 7} style={{ padding: 0 }}>
+                  <td colSpan={isAllSites ? 10 : 9} style={{ padding: 0 }}>
                     <div className="wel-timeline-wrap">
                       <div className="wel-form-grid">
                         <Field label="收款日期／收票日">
@@ -5511,6 +5586,14 @@ function ClientPaymentsTab({
                           <TermSelect payType={paymentDraft.payType} days={paymentDraft.days} baseDate={paymentDraft.date}
                             onChange={(v) => setPaymentDraft({ ...paymentDraft, ...v })} />
                         </Field>
+                        {!paymentDraft.releasesWarranty && (
+                          <Field label="保固款扣款（滾輪）">
+                            <select value={paymentDraft.warrantyRate} onChange={(e) => setPaymentDraft({ ...paymentDraft, warrantyRate: Number(e.target.value) })}>
+                              {WARRANTY_RATES.map((r) => <option key={r} value={r}>{r === 0 ? "不扣" : `${r}%`}</option>)}
+                            </select>
+                            <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>扣 {fmtMoney(Math.round(((Number(paymentDraft.amount) || 0) * (Number(paymentDraft.warrantyRate) || 0)) / 100))}</div>
+                          </Field>
+                        )}
                         {additions.length > 0 && (
                           <Field label="對應追加款項">
                             <select value={paymentDraft.additionId} onChange={(e) => setPaymentDraft({ ...paymentDraft, additionId: e.target.value })}>
@@ -5905,7 +5988,7 @@ function MasterSummaryTab({
   }, [floorItems]);
 
   const handleExportExcel = () => exportExcel(`項目總表${currentSiteName ? "_" + currentSiteName : ""}`, [
-    { name: "甲方收款", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 金額: Number(p.amount) || 0 })) },
+    { name: "甲方收款", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 實收金額: netAmt(p) })) },
     { name: "甲方樓層請款", rows: clientFloorItems.map((f) => ({ 樓層: f.floor, 項目: f.itemName, 金額: Number(f.amount) || 0 })) },
     { name: "材料叫貨", rows: orders.map((o) => ({ 日期: o.date, 類別: catById[o.categoryId]?.name || "", 品項: o.itemName, 數量: o.quantity, 單位: o.unit || "", 單價: Number(o.unitPrice) || 0, 金額: Number(o.amount) || 0 })) },
     { name: "領用紀錄", rows: usages.map((u) => ({ 日期: u.date, 品項: u.itemName, 數量: u.quantity, 單位: u.unit || "" })) },
@@ -5917,7 +6000,7 @@ function MasterSummaryTab({
   ]);
   const handleExportWord = () => exportWord(`項目總表${currentSiteName ? "_" + currentSiteName : ""}`, `項目總表${currentSiteName ? " · " + currentSiteName : ""}`, [
     { title: "1. 甲方（業主收款與請款項目）", note: `合計：${fmtMoney(clientPaidTotal)}`, headers: ["日期", "請款項目 / 樓層", "金額"], rows: [
-      ...clientPayments.map((p) => [p.date, p.item || "", fmtMoney(p.amount)]),
+      ...clientPayments.map((p) => [p.date, p.item || "", fmtMoney(netAmt(p))]),
       ...clientFloorItems.map((f) => ["—", `${f.floor} · ${f.itemName}`, fmtMoney(f.amount)]),
     ] },
     { title: "2. 我（材料採購）", note: `合計：${fmtMoney(totalCost)}`, headers: ["類別", "金額"], rows: categoryBreakdown.map((c) => [c.name, fmtMoney(c.value)]) },
@@ -5954,7 +6037,7 @@ function MasterSummaryTab({
                 <div key={p.id} className="wel-summary-row">
                   <span className="mono muted">{p.date}</span>
                   <span style={{ flex: 1 }}>{p.item || "—"}</span>
-                  <span className="mono" style={{ color: "var(--teal)" }}>{fmtMoney(p.amount)}</span>
+                  <span className="mono" style={{ color: "var(--teal)" }}>{fmtMoney(netAmt(p))}</span>
                 </div>
               ))}
             </div>
