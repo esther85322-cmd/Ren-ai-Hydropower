@@ -47,6 +47,7 @@ const daysBetween = (fromStr, toStr) => {
   const a = fromStr.split("-").map(Number), b = toStr.split("-").map(Number);
   return Math.round((new Date(b[0], b[1] - 1, b[2]) - new Date(a[0], a[1] - 1, a[2])) / 86400000);
 };
+const TERM_DAYS = [7, 14, 15, 30, 45, 60, 75, 90, 120, 150, 180];
 const payDueDate = (p) => (p.payType === "term" ? addDaysStr(p.date, p.days) : p.date);
 const isReceived = (p) => payDueDate(p) <= localToday();
 const receivedAmt = (p) => (isReceived(p) ? Number(p.amount) || 0 : 0);
@@ -783,7 +784,7 @@ export default function WaterElectricLedger() {
   const [contractForm, setContractForm] = useState(emptyContract);
   const emptyPayment = { contractId: "", date: todayStr(), amount: "", note: "" };
   const [paymentForm, setPaymentForm] = useState(emptyPayment);
-  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "" };
+  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "", split: false, amount1: "", payType2: "term", days2: 30 };
   const [clientPaymentForm, setClientPaymentForm] = useState(emptyClientPayment);
   const emptyDiscussion = { date: todayStr(), topic: "", note: "", resolved: false, result: "" };
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
@@ -1372,20 +1373,32 @@ export default function WaterElectricLedger() {
       showToast("請填寫「金額」後再新增甲方收款紀錄");
       return;
     }
-    if (clientPaymentForm.payType === "term" && !(Number(clientPaymentForm.days) > 0)) {
-      showToast("請填寫票據的「天數」（例如 30）");
-      return;
+    const f = clientPaymentForm;
+    const total = Number(f.amount);
+    const parts = [{ payType: f.payType, days: f.days, amount: total }];
+    if (f.split) {
+      const a1 = Number(f.amount1);
+      if (!(a1 > 0 && a1 < total)) { showToast("分兩張票時，第 1 張金額要大於 0 且小於總金額"); return; }
+      parts[0].amount = a1;
+      parts.push({ payType: f.payType2, days: f.days2, amount: Math.round((total - a1) * 100) / 100 });
     }
-    const rec = { id: uid(), ...clientPaymentForm, siteId: currentSiteId, amount: Number(clientPaymentForm.amount) };
-    if (rec.payType === "term") rec.days = Number(rec.days); else delete rec.days;
-    if (!rec.additionId) delete rec.additionId;
-    const next = [rec, ...clientPayments];
+    if (parts.some((pt) => pt.payType === "term" && !(Number(pt.days) > 0))) { showToast("請填寫票據的「天數」"); return; }
+    const splitId = parts.length > 1 ? uid() : undefined;
+    const { split, amount1, payType2, days2, payType, days, amount, ...base } = f;
+    const recs = parts.map((pt, i) => {
+      const rec = { id: uid(), ...base, siteId: currentSiteId, amount: pt.amount, payType: pt.payType };
+      if (pt.payType === "term") rec.days = Number(pt.days);
+      if (!rec.additionId) delete rec.additionId;
+      if (splitId) { rec.splitId = splitId; rec.note = [`分票 ${i + 1}/${parts.length}`, base.note].filter(Boolean).join("，"); }
+      return rec;
+    });
+    const next = [...recs.slice().reverse(), ...clientPayments];
     setClientPayments(next);
     persistClientPayments(next);
     setClientPaymentForm(emptyClientPayment);
-    showToast(rec.payType === "term"
-      ? `已登記 ${rec.days} 天票，${payDueDate(rec)} 到期後自動算入收款`
-      : "已新增甲方收款紀錄");
+    showToast(recs.length > 1
+      ? `已登記一筆款項分成兩張：${recs.map((r) => (r.payType === "term" ? `${r.days} 天票 ${fmtMoney(r.amount)}` : `${payTypeText(r)} ${fmtMoney(r.amount)}`)).join("、")}`
+      : recs[0].payType === "term" ? `已登記 ${recs[0].days} 天票，${payDueDate(recs[0])} 到期後自動算入收款` : "已新增甲方收款紀錄");
   };
   // ---- 工項排程 ----
   const siteScheduleItems = useMemo(
@@ -5066,6 +5079,52 @@ function ItemNameHeader({ name, onRename }) {
   );
 }
 
+// 票期滾輪：匯款／現金、即期票，或 7～180 天的期票（也可自訂天數）
+function TermSelect({ payType, days, onChange, baseDate }) {
+  const val = payType === "term" ? (TERM_DAYS.includes(Number(days)) ? "d" + Number(days) : "custom") : (payType || "cash");
+  const pick = (v) => {
+    if (v === "cash" || v === "sight") onChange({ payType: v, days: undefined });
+    else if (v === "custom") onChange({ payType: "term", days: TERM_DAYS.includes(Number(days)) ? "" : days });
+    else onChange({ payType: "term", days: Number(v.slice(1)) });
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <select value={val} onChange={(e) => pick(e.target.value)}>
+          <option value="cash">匯款／現金（當天入帳）</option>
+          <option value="sight">即期票（當天入帳）</option>
+          {TERM_DAYS.map((n) => <option key={n} value={"d" + n}>{n} 天票</option>)}
+          <option value="custom">自訂天數…</option>
+        </select>
+        {val === "custom" && <input type="number" min="1" step="1" placeholder="天數" style={{ width: 80 }} value={days ?? ""} onChange={(e) => onChange({ payType: "term", days: e.target.value })} />}
+      </div>
+      <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>
+        {payType === "term" ? (Number(days) > 0 ? `到期日 ${addDaysStr(baseDate, days)}，當天自動算入收款` : "請填天數") : "收到當天就算入收款"}
+      </div>
+    </div>
+  );
+}
+
+// 年／月／日滾輪（三個下拉選單），value 與 onChange 都是 YYYY-MM-DD
+function DateWheel({ value, onChange }) {
+  const [y0, m0, d0] = (value || localToday()).split("-").map(Number);
+  const thisYear = new Date().getFullYear();
+  const years = [];
+  for (let y = Math.min(thisYear - 3, y0); y <= Math.max(thisYear + 5, y0); y++) years.push(y);
+  const dim = new Date(y0, m0, 0).getDate();
+  const set = (y, m, d) => {
+    const maxD = new Date(y, m, 0).getDate();
+    onChange(`${y}-${String(m).padStart(2, "0")}-${String(Math.min(d, maxD)).padStart(2, "0")}`);
+  };
+  return (
+    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      <select value={y0} onChange={(e) => set(Number(e.target.value), m0, d0)}>{years.map((y) => <option key={y} value={y}>{y} 年</option>)}</select>
+      <select value={m0} onChange={(e) => set(y0, Number(e.target.value), d0)}>{Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m} 月</option>)}</select>
+      <select value={d0} onChange={(e) => set(y0, m0, Number(e.target.value))}>{Array.from({ length: dim }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d} 日</option>)}</select>
+    </div>
+  );
+}
+
 // 追加款項明細：合約之外另外追加的工程款。收款時在「新增甲方收款」選對應的追加項目，這裡就會顯示已收／未收。
 function ClientAdditionsPanel({ additions, clientPayments, siteTotalPrice, additionTotal, isAllSites, addAddition, updateAddition, deleteAddition, payFor }) {
   const [form, setForm] = useState({ date: localToday(), name: "", amount: "", note: "" });
@@ -5277,13 +5336,6 @@ function ClientPaymentsTab({
   };
   const siteTotalPrice = Number(currentSite?.clientTotalPrice) || 0;
   const additionTotal = additions.reduce((s, a) => s + (Number(a.amount) || 0), 0);
-  const payTypeSelect = (value, onChange) => (
-    <select value={value} onChange={onChange}>
-      <option value="cash">匯款／現金（當天入帳）</option>
-      <option value="sight">即期票（當天入帳）</option>
-      <option value="term">期票（幾天後到期才入帳）</option>
-    </select>
-  );
   const sortedClientPayments = useMemo(() => clientPayments.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [clientPayments]);
   const handleExportExcel = () => exportExcel("甲方收款", [
     { name: "收款紀錄", rows: clientPayments.map((p) => ({ 日期: p.date, 請款項目: p.item || "", 收款方式: payTypeText(p), 入帳日: payDueDate(p), 狀態: isReceived(p) ? "已入帳" : "未到期", 金額: Number(p.amount) || 0, 備註: p.note || "" })) },
@@ -5372,20 +5424,33 @@ function ClientPaymentsTab({
           <Field label="金額">
             <input type="number" min="0" step="any" value={clientPaymentForm.amount} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, amount: e.target.value })} />
           </Field>
-          <Field label="收款方式">
-            {payTypeSelect(clientPaymentForm.payType, (e) => setClientPaymentForm({ ...clientPaymentForm, payType: e.target.value }))}
+          <Field label={clientPaymentForm.split ? "票期滾輪①（第 1 張）" : "票期滾輪"}>
+            <TermSelect payType={clientPaymentForm.payType} days={clientPaymentForm.days} baseDate={clientPaymentForm.date}
+              onChange={(v) => setClientPaymentForm({ ...clientPaymentForm, ...v })} />
           </Field>
-          {clientPaymentForm.payType === "term" && (
-            <Field label="票期（天）" wide>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                <input type="number" min="1" step="1" style={{ width: 90 }} value={clientPaymentForm.days} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, days: e.target.value })} />
-                {[30, 45, 60, 90, 120].map((n) => <button key={n} type="button" className="wel-chip-btn" onClick={() => setClientPaymentForm({ ...clientPaymentForm, days: n })}>{n} 天</button>)}
-                <span className="muted mono" style={{ fontSize: 12 }}>
-                  {Number(clientPaymentForm.days) > 0 ? `到期日 ${addDaysStr(clientPaymentForm.date, clientPaymentForm.days)}，當天自動算入收款` : "請填天數"}
-                </span>
-              </div>
+          {clientPaymentForm.split && (
+            <Field label="第 1 張金額">
+              <input type="number" min="0" step="any" value={clientPaymentForm.amount1} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, amount1: e.target.value })} />
             </Field>
           )}
+          {clientPaymentForm.split && (
+            <Field label="票期滾輪②（第 2 張）">
+              <TermSelect payType={clientPaymentForm.payType2} days={clientPaymentForm.days2} baseDate={clientPaymentForm.date}
+                onChange={(v) => setClientPaymentForm({ ...clientPaymentForm, payType2: v.payType, days2: v.days })} />
+            </Field>
+          )}
+          {clientPaymentForm.split && (
+            <Field label="第 2 張金額（自動＝總金額 － 第 1 張）">
+              <div className="wel-amount-preview">{fmtMoney(Math.max(0, (Number(clientPaymentForm.amount) || 0) - (Number(clientPaymentForm.amount1) || 0)))}</div>
+            </Field>
+          )}
+          <Field label="一筆款項分兩種票期" wide>
+            {clientPaymentForm.split ? (
+              <button type="button" className="wel-btn-ghost" onClick={() => setClientPaymentForm({ ...clientPaymentForm, split: false })}>取消分票（只用一種票期）</button>
+            ) : (
+              <button type="button" className="wel-btn-ghost" onClick={() => setClientPaymentForm({ ...clientPaymentForm, split: true, amount1: clientPaymentForm.amount1 || (Number(clientPaymentForm.amount) > 0 ? Math.round(Number(clientPaymentForm.amount) / 2) : "") })}><Plus size={13} /> 這筆款項再分一種票期（例如一半即期、一半 30 天）</button>
+            )}
+          </Field>
           {additions.length > 0 && (
             <Field label="對應追加款項（選填）">
               <select value={clientPaymentForm.additionId || ""} onChange={(e) => setClientPaymentForm({ ...clientPaymentForm, additionId: e.target.value })}>
@@ -5442,15 +5507,10 @@ function ClientPaymentsTab({
                         <Field label="金額">
                           <input type="number" min="0" step="any" value={paymentDraft.amount} onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })} />
                         </Field>
-                        <Field label="收款方式">
-                          {payTypeSelect(paymentDraft.payType, (e) => setPaymentDraft({ ...paymentDraft, payType: e.target.value }))}
+                        <Field label="票期滾輪">
+                          <TermSelect payType={paymentDraft.payType} days={paymentDraft.days} baseDate={paymentDraft.date}
+                            onChange={(v) => setPaymentDraft({ ...paymentDraft, ...v })} />
                         </Field>
-                        {paymentDraft.payType === "term" && (
-                          <Field label="票期（天）">
-                            <input type="number" min="1" step="1" value={paymentDraft.days} onChange={(e) => setPaymentDraft({ ...paymentDraft, days: e.target.value })} />
-                            <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>到期日 {Number(paymentDraft.days) > 0 ? addDaysStr(paymentDraft.date, paymentDraft.days) : "—"}</div>
-                          </Field>
-                        )}
                         {additions.length > 0 && (
                           <Field label="對應追加款項">
                             <select value={paymentDraft.additionId} onChange={(e) => setPaymentDraft({ ...paymentDraft, additionId: e.target.value })}>
@@ -6609,6 +6669,41 @@ function ScheduleTab({ items, siteById, isAllSites, sites, setCurrentSiteId, add
   );
 }
 
+// 步驟的時間紀錄：每做一次就記一筆（年／月／日滾輪選開始與結束），同一步驟會累計次數與天數
+const logDays = (l) => Math.max(1, daysBetween(l.start, l.end) + 1);
+function StepTimeLogs({ logs, onChange }) {
+  const [draft, setDraft] = useState({ start: localToday(), end: localToday(), note: "" });
+  const total = logs.reduce((s, l) => s + logDays(l), 0);
+  const setStart = (v) => setDraft((d) => ({ ...d, start: v, end: d.end < v ? v : d.end }));
+  const setEnd = (v) => setDraft((d) => ({ ...d, end: v < d.start ? d.start : v }));
+  const add = () => {
+    onChange([...logs, { id: uid(), start: draft.start, end: draft.end, note: draft.note.trim() }]);
+    setDraft({ start: draft.end, end: draft.end, note: "" });
+  };
+  return (
+    <div style={{ marginTop: 10, padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8 }}>
+      <div style={{ fontSize: 12.5, marginBottom: 6 }}>
+        <b>時間紀錄</b>
+        <span className="muted"> · {logs.length > 0 ? `共 ${logs.length} 次，合計 ${total} 天，平均 ${(total / logs.length).toFixed(1)} 天` : "還沒有紀錄"}</span>
+      </div>
+      {logs.slice().sort((a, b) => (a.start < b.start ? -1 : 1)).map((l) => (
+        <div key={l.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, marginBottom: 3, flexWrap: "wrap" }}>
+          <span className="mono">{l.start} ～ {l.end}</span>
+          <b className="mono" style={{ color: "var(--amber)" }}>{logDays(l)} 天</b>
+          {l.note && <span className="muted">{l.note}</span>}
+          <button type="button" className="wel-icon-btn" title="刪除這筆時間紀錄" onClick={() => onChange(logs.filter((x) => x.id !== l.id))}><X size={12} /></button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginTop: 6 }}>
+        <label className="wel-mini-label">開始<DateWheel value={draft.start} onChange={setStart} /></label>
+        <label className="wel-mini-label">結束<DateWheel value={draft.end} onChange={setEnd} /></label>
+        <label className="wel-mini-label">備註（案場／樓層，選填）<input style={{ width: 160 }} value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></label>
+        <button type="button" className="wel-btn-ghost" onClick={add}><Plus size={13} /> 新增時間紀錄</button>
+      </div>
+    </div>
+  );
+}
+
 function WorkflowTab({ workflow, saveWorkflow, showToast }) {
   const [openPhases, setOpenPhases] = useState({});
   const [editing, setEditing] = useState(null); // { type: "phase" | "step", phaseId, stepId, isNew }
@@ -6657,14 +6752,32 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
     if (!window.confirm(`確定要刪除步驟「${st.title}」嗎？刪除後無法復原。`)) return;
     saveWorkflow(workflow.map((x) => (x.id === p.id ? { ...x, steps: x.steps.filter((y) => y.id !== st.id) } : x)));
   };
+  // 相同名稱的步驟（不分階段）合併統計：次數、合計天數、平均、最短／最長
+  const stepStats = useMemo(() => {
+    const m = {};
+    workflow.forEach((p) => p.steps.forEach((st) => {
+      const logs = st.timeLogs || [];
+      if (!logs.length) return;
+      const key = st.title.trim().replace(/\s+/g, "");
+      const r = m[key] || (m[key] = { title: st.title.trim(), phases: new Set(), days: [] });
+      r.phases.add(p.title);
+      logs.forEach((l) => r.days.push(logDays(l)));
+    }));
+    return Object.values(m).map((r) => {
+      const sum = r.days.reduce((a, b) => a + b, 0);
+      return { title: r.title, phases: [...r.phases].join("、"), count: r.days.length, sum, avg: sum / r.days.length, min: Math.min(...r.days), max: Math.max(...r.days) };
+    }).sort((a, b) => b.sum - a.sum);
+  }, [workflow]);
+  const setStepLogs = (phaseId, stepId, logs) => saveWorkflow(workflow.map((x) => (x.id === phaseId ? { ...x, steps: x.steps.map((y) => (y.id === stepId ? { ...y, timeLogs: logs } : y)) } : x)));
   const applyTemplate = () => saveWorkflow(WORKFLOW_TEMPLATE.map((title) => ({ id: uid(), title, summary: "", steps: [] })));
 
   const handleExportExcel = () => exportExcel("施工流程", [{
     name: "施工流程",
     rows: workflow.flatMap((p, i) => (p.steps.length ? p.steps : [{ title: "", details: "", tips: "" }]).map((st, j) => ({
       階段: `${i + 1}. ${p.title}`, 階段說明: p.summary || "", 步驟: st.title ? `${i + 1}-${j + 1} ${st.title}` : "", 做法細節: st.details || "", "經驗／注意事項": st.tips || "",
+      時間紀錄: (st.timeLogs || []).map((l) => `${l.start}～${l.end}（${logDays(l)}天）`).join("；"),
     }))),
-  }]);
+  }, ...(stepStats.length ? [{ name: "相同步驟時間統計", rows: stepStats.map((r) => ({ 步驟: r.title, 所屬階段: r.phases, 做了幾次: r.count, 合計天數: r.sum, 平均天數: Math.round(r.avg * 10) / 10, 最短: r.min, 最長: r.max })) }] : [])]);
   const handleExportWord = () => exportWord("施工流程", "施工流程（經驗傳承）", workflow.map((p, i) => ({
     title: `${i + 1}. ${p.title}`,
     note: p.summary || undefined,
@@ -6712,8 +6825,35 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
         <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
       </div>
       <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>
-        把從開始到結束的做法、順序與經驗寫在這裡，給之後接手的人照著做。所有案場共用同一份，隨時可以修改、調整順序或刪除。
+        把從開始到結束的做法、順序與經驗寫在這裡，給之後接手的人照著做。所有案場共用同一份，隨時可以修改、調整順序或刪除。每個步驟下面可以記「時間紀錄」（用年／月／日滾輪選），名稱相同的步驟會自動合併統計所需天數。
       </div>
+      {stepStats.length > 0 && (
+        <div className="wel-card" style={{ marginBottom: 12, padding: 0, overflow: "hidden" }}>
+          <div className="wel-card-title" style={{ padding: "12px 14px 0" }}><CalendarRange size={14} /> 相同步驟的時間統計</div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="wel-table">
+              <thead><tr><th>步驟</th><th>所屬階段</th><th className="right">做了幾次</th><th className="right">合計天數</th><th className="right">平均每次</th><th className="right">最短 / 最長</th></tr></thead>
+              <tbody>
+                {stepStats.map((r) => (
+                  <tr key={r.title}>
+                    <td>{r.title}</td>
+                    <td className="muted">{r.phases}</td>
+                    <td className="right mono">{r.count}</td>
+                    <td className="right mono strong">{r.sum} 天</td>
+                    <td className="right mono">{r.avg.toFixed(1)} 天</td>
+                    <td className="right mono muted">{r.min} / {r.max} 天</td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop: "2px solid var(--border)", background: "var(--surface2)" }}>
+                  <td className="strong" colSpan={3}>全部步驟合計</td>
+                  <td className="right mono strong">{stepStats.reduce((a, r) => a + r.sum, 0)} 天</td>
+                  <td colSpan={2}></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {workflow.length === 0 && !editing && (
         <div className="wel-card">
@@ -6761,6 +6901,7 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
                           <span className="muted" style={{ fontSize: 11.5 }}>經驗／注意事項</span>{"\n"}{st.tips}
                         </div>
                       )}
+                      <StepTimeLogs logs={st.timeLogs || []} onChange={(logs) => setStepLogs(p.id, st.id, logs)} />
                     </>
                   )}
                 </div>
