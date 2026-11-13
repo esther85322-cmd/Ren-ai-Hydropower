@@ -199,6 +199,7 @@ export default function WaterElectricLedger() {
   const [floorItems, setFloorItems] = useState([]);
   const [clientPayments, setClientPayments] = useState([]);
   const [clientAdditions, setClientAdditions] = useState([]);
+  const [scheduleItems, setScheduleItems] = useState([]);
   // 每分鐘看一次日期有沒有換天；換天後到期的票據會自動重新計入收款
   const [dayKey, setDayKey] = useState(localToday());
   useEffect(() => {
@@ -238,6 +239,7 @@ export default function WaterElectricLedger() {
       const fi = data.flooritems ?? [];
       const cp = data.clientpayments ?? [];
       const cad = data.clientadditions ?? [];
+      const sch = data.schedule ?? [];
       const ctr = data.clienttemplate ?? [];
       const cfi = data.clientflooritems ?? [];
       const cwl = data.contractworklogs ?? [];
@@ -279,6 +281,7 @@ export default function WaterElectricLedger() {
       setFloorItems(fi);
       setClientPayments(cp);
       setClientAdditions(cad);
+      setScheduleItems(sch);
       setClientTemplateRows(ctr);
       setClientFloorItems(cfi);
       setContractWorkLogs(cwl);
@@ -365,6 +368,11 @@ export default function WaterElectricLedger() {
   const persistClientPayments = useCallback(async (list) => {
     setSaving(true);
     await storageSet("clientpayments", list);
+    setSaving(false);
+  }, []);
+  const persistSchedule = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("schedule", list);
     setSaving(false);
   }, []);
   const persistClientAdditions = useCallback(async (list) => {
@@ -1379,6 +1387,31 @@ export default function WaterElectricLedger() {
       ? `已登記 ${rec.days} 天票，${payDueDate(rec)} 到期後自動算入收款`
       : "已新增甲方收款紀錄");
   };
+  // ---- 工項排程 ----
+  const siteScheduleItems = useMemo(
+    () => (isAllSites ? scheduleItems : scheduleItems.filter((i) => i.siteId === currentSiteId)),
+    [scheduleItems, currentSiteId, isAllSites]
+  );
+  const addScheduleItem = (rec) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增工項排程"); return false; }
+    if (!(rec.name || "").trim()) { showToast("請填寫工項名稱"); return false; }
+    if (!(Number(rec.days) >= 1)) { showToast("請填寫所需天數（至少 1 天）"); return false; }
+    if (!rec.start) { showToast("請選擇開始日"); return false; }
+    const next = [...scheduleItems, { id: uid(), siteId: currentSiteId, name: rec.name.trim(), start: rec.start, days: Math.round(Number(rec.days)), note: (rec.note || "").trim(), done: false }];
+    setScheduleItems(next);
+    persistSchedule(next);
+    return true;
+  };
+  const updateScheduleItem = (id, patch) => {
+    const next = scheduleItems.map((i) => (i.id === id ? { ...i, ...patch } : i));
+    setScheduleItems(next);
+    persistSchedule(next);
+  };
+  const deleteScheduleItem = (id) => {
+    const next = scheduleItems.filter((i) => i.id !== id);
+    setScheduleItems(next);
+    persistSchedule(next);
+  };
   // ---- 追加款項明細 ----
   const addClientAddition = (rec) => {
     if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增追加款項"); return false; }
@@ -1784,6 +1817,7 @@ export default function WaterElectricLedger() {
       clientPayments.some((p) => p.siteId === id) ||
       clientTemplateRows.some((r) => r.siteId === id) ||
       clientFloorItems.some((f) => f.siteId === id) ||
+      scheduleItems.some((i) => i.siteId === id) ||
       contractWorkLogs.some((l) => l.siteId === id) ||
       contractItems.some((it) => it.siteId === id) ||
       discussionItems.some((d) => d.siteId === id);
@@ -1874,6 +1908,7 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<ListOrdered size={16} />} label="項目總表" active={tab === "summary"} onClick={() => setTab("summary")} />
             <NavBtn icon={<MessageSquare size={16} />} label="備註討論" active={tab === "discussion"} onClick={() => setTab("discussion")} />
             <NavBtn icon={<NotebookPen size={16} />} label="大項記事本" active={tab === "notebook"} onClick={() => setTab("notebook")} />
+            <NavBtn icon={<CalendarRange size={16} />} label="工項排程" active={tab === "schedule"} onClick={() => setTab("schedule")} />
             <NavBtn icon={<Workflow size={16} />} label="施工流程" active={tab === "workflow"} onClick={() => setTab("workflow")} />
             <NavBtn icon={<Wallet size={16} />} label="甲方收款" active={tab === "client"} onClick={() => setTab("client")} />
             <NavBtn icon={<PiggyBank size={16} />} label="投入成本" active={tab === "capital"} onClick={() => setTab("capital")} />
@@ -2187,6 +2222,12 @@ export default function WaterElectricLedger() {
               setCurrentSiteId={setCurrentSiteId}
               currentSiteId={currentSiteId}
               showToast={showToast}
+            />
+          )}
+          {tab === "schedule" && (
+            <ScheduleTab
+              items={siteScheduleItems} siteById={siteById} isAllSites={isAllSites} sites={sites} setCurrentSiteId={setCurrentSiteId}
+              addItem={addScheduleItem} updateItem={updateScheduleItem} deleteItem={deleteScheduleItem} showToast={showToast}
             />
           )}
           {tab === "workflow" && <WorkflowTab workflow={workflow} saveWorkflow={saveWorkflow} showToast={showToast} />}
@@ -6389,6 +6430,185 @@ function DiscussionTab({
 const WORKFLOW_TEMPLATE = ["接案與估價", "簽約與發包", "備料與叫貨", "進場施工", "驗收與請款", "結案與保固"];
 
 // 施工流程：階段 → 步驟，寫給之後接手的人看的經驗手冊（全案場共用）。
+// 工項排程：每個工項有開始日與天數，系統統計整體共需多少天（含空檔／實際有工作的天數／各工項加總），並畫出時間軸。
+const itemEnd = (it) => addDaysStr(it.start, Math.max(1, Number(it.days) || 1) - 1);
+const countNonSundays = (start, days) => {
+  let n = 0;
+  for (let i = 0; i < days; i++) {
+    const [y, m, d] = addDaysStr(start, i).split("-").map(Number);
+    if (new Date(y, m - 1, d).getDay() !== 0) n++;
+  }
+  return n;
+};
+
+function ScheduleTab({ items, siteById, isAllSites, sites, setCurrentSiteId, addItem, updateItem, deleteItem, showToast }) {
+  const lastEnd = items.length ? items.map(itemEnd).sort().slice(-1)[0] : "";
+  const nextStart = () => (lastEnd ? addDaysStr(lastEnd, 1) : localToday());
+  const [form, setForm] = useState({ name: "", start: "", days: "", note: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const startVal = form.start || nextStart();
+
+  const sorted = useMemo(() => items.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.name.localeCompare(b.name, "zh-Hant"))), [items]);
+
+  const stats = useMemo(() => {
+    if (!sorted.length) return null;
+    const first = sorted[0].start;
+    const last = sorted.map(itemEnd).sort().slice(-1)[0];
+    const span = daysBetween(first, last) + 1;
+    // 有工作的天數：把所有工項的日期區間合併，重疊的日子只算一次
+    const covered = new Set();
+    let sum = 0;
+    sorted.forEach((it) => {
+      const n = Math.max(1, Number(it.days) || 1);
+      sum += n;
+      for (let i = 0; i < n; i++) covered.add(addDaysStr(it.start, i));
+    });
+    const workDays = covered.size;
+    return {
+      first, last, span, sum, workDays, gap: span - workDays,
+      spanNoSun: countNonSundays(first, span),
+      done: sorted.filter((it) => it.done).length,
+    };
+  }, [sorted]);
+
+  const submit = () => {
+    if (addItem({ name: form.name, start: startVal, days: form.days, note: form.note })) setForm({ name: "", start: "", days: "", note: "" });
+  };
+  const save = (id) => {
+    if (!draft.name.trim()) { showToast("請填寫工項名稱"); return; }
+    if (!(Number(draft.days) >= 1)) { showToast("天數至少 1 天"); return; }
+    updateItem(id, { name: draft.name.trim(), start: draft.start, days: Math.round(Number(draft.days)), note: draft.note.trim() });
+    setEditingId(null);
+    setDraft(null);
+  };
+
+  const handleExportExcel = () => exportExcel("工項排程", [
+    { name: "工項排程", rows: sorted.map((it) => ({ 工項: it.name, 開始日: it.start, 結束日: itemEnd(it), 天數: Number(it.days) || 1, 狀態: it.done ? "已完成" : "未完成", 備註: it.note || "" })) },
+    ...(stats ? [{ name: "工期統計", rows: [{ 項目: "最早開始", 內容: stats.first }, { 項目: "最晚結束", 內容: stats.last }, { 項目: "整體工期（日曆天，含空檔）", 內容: stats.span }, { 項目: "整體工期（不含週日）", 內容: stats.spanNoSun }, { 項目: "有工作的天數（重疊只算一次）", 內容: stats.workDays }, { 項目: "各工項天數加總", 內容: stats.sum }] }] : []),
+  ]);
+  const handleExportWord = () => exportWord("工項排程", "工項日期排程", [
+    ...(stats ? [{ title: "工期統計", headers: ["項目", "內容"], rows: [["最早開始", stats.first], ["最晚結束", stats.last], ["整體工期（日曆天，含空檔）", `${stats.span} 天`], ["整體工期（不含週日）", `${stats.spanNoSun} 天`], ["有工作的天數（重疊只算一次）", `${stats.workDays} 天`], ["各工項天數加總", `${stats.sum} 天`]] }] : []),
+    { title: "工項排程", headers: ["工項", "開始日", "結束日", "天數", "狀態", "備註"], rows: sorted.map((it) => [it.name, it.start, itemEnd(it), `${Number(it.days) || 1}`, it.done ? "已完成" : "未完成", it.note || ""]) },
+  ]);
+
+  const today = localToday();
+  const barStyle = (it) => {
+    const left = (daysBetween(stats.first, it.start) / stats.span) * 100;
+    const width = (Math.max(1, Number(it.days) || 1) / stats.span) * 100;
+    return { position: "absolute", left: `${left}%`, width: `${Math.max(width, 0.8)}%`, top: 4, bottom: 4, borderRadius: 4, background: it.done ? "var(--green)" : "var(--teal)", opacity: it.done ? 0.65 : 0.95 };
+  };
+  const todayPct = stats && today >= stats.first && today <= stats.last ? (daysBetween(stats.first, today) / stats.span) * 100 : null;
+
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">排程 · SCHEDULE</div>
+          <h1 className="wel-h1">工項日期排程</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+      </div>
+      <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>
+        新增每個工項的開始日與所需天數，系統會算出整體共需多少天，並畫出時間軸。新增時開始日預設接在最後一個工項的隔天，可自己改；工項可以重疊進行。
+      </div>
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增與查看工項排程" />}
+
+      {stats && (
+        <div className="wel-labor-summary">
+          <div className="wel-labor-stat"><span>整體共需（日曆天）</span><b style={{ color: "var(--teal)" }}>{stats.span} 天</b></div>
+          <div className="wel-labor-stat"><span>不含週日</span><b>{stats.spanNoSun} 天</b></div>
+          <div className="wel-labor-stat"><span>有工作的天數（重疊算一次）</span><b>{stats.workDays} 天</b></div>
+          <div className="wel-labor-stat"><span>各工項天數加總</span><b>{stats.sum} 天</b></div>
+          <div className="wel-labor-stat"><span>期間</span><b style={{ fontSize: 14 }}>{stats.first} ～ {stats.last}</b></div>
+          <div className="wel-labor-stat"><span>完成進度</span><b>{stats.done} / {sorted.length} 項</b></div>
+        </div>
+      )}
+      {stats && stats.gap > 0 && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>其中有 {stats.gap} 天沒有排任何工項（空檔）。</div>}
+
+      <div className="wel-card wel-form" style={{ marginTop: 12, ...(isAllSites ? { opacity: 0.5, pointerEvents: "none" } : {}) }}>
+        <div className="wel-card-title"><CalendarRange size={14} /> 新增工項</div>
+        <div className="wel-form-grid">
+          <Field label="工項名稱" wide><input placeholder="例：B1F 配管、2F 穿線、消防試水" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && submit()} /></Field>
+          <Field label="開始日"><input type="date" value={startVal} onChange={(e) => setForm({ ...form, start: e.target.value })} /></Field>
+          <Field label="所需天數"><input type="number" min="1" step="1" placeholder="天" value={form.days} onChange={(e) => setForm({ ...form, days: e.target.value })} /></Field>
+          <Field label="結束日（自動算）"><div className="wel-amount-preview">{Number(form.days) >= 1 ? addDaysStr(startVal, Math.round(Number(form.days)) - 1) : "—"}</div></Field>
+          <Field label="備註" wide><input placeholder="選填" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submit}><Plus size={15} /> 新增工項</button>
+      </div>
+
+      {stats && (
+        <div className="wel-card" style={{ marginTop: 12 }}>
+          <div className="wel-card-title"><Layers size={14} /> 時間軸</div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 4 }} className="muted mono"><span>{stats.first}</span><span>{stats.span} 天</span><span>{stats.last}</span></div>
+          <div style={{ position: "relative" }}>
+            {todayPct !== null && <div title={`今天 ${today}`} style={{ position: "absolute", left: `${todayPct}%`, top: 0, bottom: 0, width: 2, background: "var(--amber)", zIndex: 2 }} />}
+            {sorted.map((it) => (
+              <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                <div style={{ flex: "0 0 120px", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</div>
+                <div style={{ position: "relative", flex: 1, height: 26, background: "var(--surface2)", borderRadius: 4 }}>
+                  <div style={barStyle(it)} title={`${it.name}：${it.start} ～ ${itemEnd(it)}（${it.days} 天）`} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>橘色直線是今天；綠色是已完成的工項。</div>
+        </div>
+      )}
+
+      <div className="wel-card" style={{ marginTop: 12, padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wel-table">
+            <thead><tr><th></th>{isAllSites && <th>案場</th>}<th>工項</th><th>開始日</th><th>結束日</th><th className="right">天數</th><th>備註</th><th></th></tr></thead>
+            <tbody>
+              {sorted.length === 0 && <tr><td colSpan={isAllSites ? 8 : 7}><Empty text="尚未排任何工項" /></td></tr>}
+              {sorted.map((it) => {
+                const open = editingId === it.id;
+                return (
+                  <React.Fragment key={it.id}>
+                    <tr className="wel-row-clickable" onClick={() => (open ? (setEditingId(null), setDraft(null)) : (setEditingId(it.id), setDraft({ name: it.name, start: it.start, days: it.days, note: it.note || "" })))}>
+                      <td onClick={(e) => e.stopPropagation()}><input type="checkbox" title="標記完成" checked={!!it.done} onChange={(e) => updateItem(it.id, { done: e.target.checked })} style={{ width: 16, height: 16 }} /></td>
+                      {isAllSites && <td className="muted">{siteById[it.siteId]?.name || "—"}</td>}
+                      <td style={it.done ? { textDecoration: "line-through", opacity: 0.7 } : undefined}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{it.name}</span>
+                      </td>
+                      <td className="mono">{it.start}</td>
+                      <td className="mono">{itemEnd(it)}</td>
+                      <td className="right mono strong">{it.days} 天</td>
+                      <td className="muted">{it.note || "—"}</td>
+                      <td><button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteItem(it.id); }}><Trash2 size={14} /></button></td>
+                    </tr>
+                    {open && draft && (
+                      <tr onClick={(e) => e.stopPropagation()}>
+                        <td colSpan={isAllSites ? 8 : 7} style={{ padding: 0 }}>
+                          <div className="wel-timeline-wrap">
+                            <div className="wel-form-grid">
+                              <Field label="工項名稱" wide><input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></Field>
+                              <Field label="開始日"><input type="date" value={draft.start} onChange={(e) => setDraft({ ...draft, start: e.target.value })} /></Field>
+                              <Field label="所需天數"><input type="number" min="1" step="1" value={draft.days} onChange={(e) => setDraft({ ...draft, days: e.target.value })} /></Field>
+                              <Field label="結束日（自動算）"><div className="wel-amount-preview">{Number(draft.days) >= 1 ? addDaysStr(draft.start, Math.round(Number(draft.days)) - 1) : "—"}</div></Field>
+                              <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                            </div>
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button type="button" className="wel-btn-primary" onClick={() => save(it.id)}>儲存修改</button>
+                              <button type="button" className="wel-btn-ghost" onClick={() => { setEditingId(null); setDraft(null); }}>取消</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WorkflowTab({ workflow, saveWorkflow, showToast }) {
   const [openPhases, setOpenPhases] = useState({});
   const [editing, setEditing] = useState(null); // { type: "phase" | "step", phaseId, stepId, isNew }
