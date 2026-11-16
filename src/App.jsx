@@ -851,9 +851,48 @@ export default function WaterElectricLedger() {
     persistOrders(next);
   };
   const updateOrder = (id, patch) => {
+    const old = orders.find((o) => o.id === id);
     const next = orders.map((o) => (o.id === id ? { ...o, ...patch } : o));
     setOrders(next);
     persistOrders(next);
+    // 在叫貨紀錄改了類別，同名的品項也跟著改到「品項類別」裡（之後叫貨挑這個品項會自動帶新類別）
+    if (old && patch.categoryId && patch.categoryId !== old.categoryId) {
+      const name = ((patch.itemName ?? old.itemName) || "").trim();
+      const hit = materialItems.filter((m) => m.name === name && m.categoryId !== patch.categoryId);
+      if (hit.length) {
+        const nextItems = materialItems.map((m) => (m.name === name ? { ...m, categoryId: patch.categoryId } : m));
+        setMaterialItems(nextItems);
+        persistMaterialItems(nextItems);
+        showToast(`已同步：品項「${name}」的類別改為「${catById[patch.categoryId]?.name || "未分類"}」`);
+      }
+    }
+  };
+  // 依叫貨紀錄校正品項類別：品項清單裡的類別，若沒有任何一筆叫貨用過，就改成叫貨實際用的類別（多種時取最常用、並列取最近）
+  const syncPlan = useMemo(() => {
+    const byName = {};
+    orders.forEach((o) => {
+      const r = byName[o.itemName] || (byName[o.itemName] = {});
+      const c = r[o.categoryId] || (r[o.categoryId] = { n: 0, last: "" });
+      c.n += 1;
+      if ((o.date || "") > c.last) c.last = o.date || "";
+    });
+    const plan = [];
+    materialItems.forEach((m) => {
+      const r = byName[m.name];
+      if (!r || r[m.categoryId]) return;
+      const best = Object.entries(r).sort((a, b) => b[1].n - a[1].n || (a[1].last < b[1].last ? 1 : -1))[0][0];
+      plan.push({ id: m.id, name: m.name, from: m.categoryId, to: best });
+    });
+    return plan;
+  }, [orders, materialItems]);
+  const syncCategoriesFromOrders = () => {
+    if (!syncPlan.length) { showToast("品項類別已和叫貨紀錄一致，不需要同步"); return; }
+    if (!window.confirm(`有 ${syncPlan.length} 個品項的類別和叫貨紀錄裡實際用的不一樣。\n\n要把這 ${syncPlan.length} 個品項的類別，改成叫貨紀錄裡用的類別嗎？（只會改「品項類別」的設定，不會動任何叫貨紀錄）`)) return;
+    const toById = Object.fromEntries(syncPlan.map((x) => [x.id, x.to]));
+    const nextItems = materialItems.map((m) => (toById[m.id] ? { ...m, categoryId: toById[m.id] } : m));
+    setMaterialItems(nextItems);
+    persistMaterialItems(nextItems);
+    showToast(`已同步 ${syncPlan.length} 個品項的類別`);
   };
 
   const deleteUsage = (id) => {
@@ -2126,6 +2165,8 @@ export default function WaterElectricLedger() {
               updateMaterialItem={updateMaterialItem}
               removeMaterialItem={removeMaterialItem}
               confirmScannedItems={confirmScannedItems}
+              syncPlan={syncPlan}
+              onSyncCategories={syncCategoriesFromOrders}
               showToast={showToast}
             />
           )}
@@ -2778,6 +2819,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   const [newMaterial, setNewMaterial] = useState({ name: "", unit: "", defaultPrice: "" });
   const [newSupplier, setNewSupplier] = useState("");
   const [openOrderMonths, setOpenOrderMonths] = useState({});
+  const [openOrderDays, setOpenOrderDays] = useState({});
   const [invoiceFilter, setInvoiceFilter] = useState("all"); // all | yes | no
   const filteredOrders = useMemo(
     () => orders.filter((o) => (invoiceFilter === "all" ? true : invoiceFilter === "yes" ? !!o.hasInvoice : !o.hasInvoice)),
@@ -3054,7 +3096,23 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                       </tr>
                     </thead>
                     <tbody>
-                      {mg.items.map((o) => {
+                      {ordersByDay(mg.items).map((dg) => {
+                        const dOpen = !!openOrderDays[dg.date];
+                        return (
+                        <React.Fragment key={dg.date}>
+                        <tr
+                          className="wel-row-clickable"
+                          style={{ background: "var(--surface2)" }}
+                          onClick={() => setOpenOrderDays((prev) => ({ ...prev, [dg.date]: !prev[dg.date] }))}
+                        >
+                          <td colSpan={isAllSites ? 12 : 11} className="strong">
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                              {dOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                              {dg.date} · {dg.items.length} 筆 · {totalsText(sumOf(dg.items))}
+                            </span>
+                          </td>
+                        </tr>
+                        {dOpen && dg.items.map((o) => {
                         const isOpen = expandedOrderId === o.id;
                         return (
                         <React.Fragment key={o.id}>
@@ -3159,6 +3217,9 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                             </td>
                           </tr>
                         )}
+                        </React.Fragment>
+                        );
+                        })}
                         </React.Fragment>
                         );
                       })}
@@ -4712,6 +4773,20 @@ function naturalFloorSort(a, b) {
   return a.localeCompare(b);
 }
 
+function ordersByDay(items) {
+  const groups = [];
+  const idx = {};
+  items.forEach((o) => {
+    const d = o.date || "未知日期";
+    if (idx[d] === undefined) {
+      idx[d] = groups.length;
+      groups.push({ date: d, items: [] });
+    }
+    groups[idx[d]].items.push(o);
+  });
+  return groups;
+}
+
 function attendanceByMonth(logs) {
   const map = {};
   logs.forEach((l) => {
@@ -6155,7 +6230,7 @@ function MasterSummaryTab({
   );
 }
 
-function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, showToast }) {
+function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, syncPlan, onSyncCategories, showToast }) {
   const [scanOpen, setScanOpen] = useState(false);
   // 日期查詢：起迄任填一邊也可以；有設定時，下面所有類別／品項的筆數、金額與時間軸都只看這段期間
   const [range, setRange] = useState({ from: "", to: "" });
@@ -6237,6 +6312,21 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
           <button type="button" className="wel-btn-primary" style={{ alignSelf: "end" }} onClick={addCategory}><Plus size={15} /> 新增</button>
         </div>
       </div>
+      {syncPlan.length > 0 && (
+        <div className="wel-card" style={{ marginBottom: 12, borderColor: "var(--amber)" }}>
+          <div className="wel-card-title"><Tags size={14} /> 有 {syncPlan.length} 個品項的類別，和叫貨紀錄裡實際用的不一樣</div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+            你在叫貨紀錄改過類別，但品項類別裡還是舊的。按下按鈕，會把這些品項的類別改成叫貨紀錄裡用的（只改品項類別的設定，不動任何叫貨紀錄）。之後在叫貨紀錄改類別，會自動同步，不用再按。
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            {syncPlan.slice(0, 12).map((x) => (
+              <span key={x.id} className="wel-chip" title={x.name}>{x.name.length > 16 ? x.name.slice(0, 16) + "…" : x.name}：{categories.find((c) => c.id === x.from)?.name || "未歸類"} → <b>{categories.find((c) => c.id === x.to)?.name || "未分類"}</b></span>
+            ))}
+            {syncPlan.length > 12 && <span className="muted" style={{ fontSize: 12 }}>…還有 {syncPlan.length - 12} 個</span>}
+          </div>
+          <button type="button" className="wel-btn-primary" onClick={onSyncCategories}>同步 {syncPlan.length} 個品項的類別</button>
+        </div>
+      )}
       <div className="wel-card wel-form" style={{ marginBottom: 12 }}>
         <div className="wel-card-title"><CalendarRange size={14} /> 用日期查詢各類別的紀錄</div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
