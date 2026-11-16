@@ -2036,6 +2036,7 @@ export default function WaterElectricLedger() {
           {tab === "orders" && (
             <OrdersTab
               orders={siteOrders}
+              allOrders={orders}
               categories={categories}
               catById={catById}
               siteById={siteById}
@@ -2790,7 +2791,7 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
   );
 }
 
-function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders }) {
+function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders, allOrders }) {
   const [scanOpen, setScanOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [expandedOrderId, setExpandedOrderId] = useState(null);
@@ -2841,22 +2842,59 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
     const stillValid = materialItems.some((m) => m.name === orderForm.itemName && (m.categoryId === categoryId || !m.categoryId || !catById[m.categoryId]));
     setOrderForm({ ...orderForm, categoryId, ...(stillValid ? {} : { itemName: "" }) });
   };
+  // 每個廠商賣這個品項的價格：取該廠商最近一次叫這個品項的單價（所有案場的叫貨紀錄都算）
+  const vendorStatsOf = (name) => {
+    const m = {};
+    if (!name) return m;
+    (allOrders || orders).forEach((o) => {
+      if (o.itemName !== name || !o.supplier) return;
+      const r = m[o.supplier] || (m[o.supplier] = { price: null, date: "", count: 0, unit: "" });
+      r.count += 1;
+      if ((o.date || "") >= r.date) { r.date = o.date || ""; r.price = o.unitPrice; r.unit = o.unit || ""; }
+    });
+    return m;
+  };
+  const vendorStats = useMemo(() => vendorStatsOf(orderForm.itemName), [allOrders, orders, orderForm.itemName]);
+  // 選了品項後，廠商選單只列「叫過這個品項的廠商」；還沒選品項時列全部。要用沒叫過的廠商，按「＋ 新增／加入其他廠商」
+  const vendorNames = useMemo(() => {
+    if (!orderForm.itemName) return sortedSuppliers.map((x) => x.name);
+    const names = new Set(Object.keys(vendorStats));
+    if (orderForm.supplier) names.add(orderForm.supplier);
+    return [...names].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+  }, [orderForm.itemName, orderForm.supplier, vendorStats, sortedSuppliers]);
+  const [addVendorOpen, setAddVendorOpen] = useState(false);
+  const [vendorDraft, setVendorDraft] = useState("");
   const handlePick = (e) => {
     const val = e.target.value;
     if (val === "__manage__") { setManageOpen(true); return; }
     const m = materialItems.find((x) => x.name === val);
+    const vs = vendorStatsOf(val);
+    const keep = orderForm.supplier && vs[orderForm.supplier] ? vs[orderForm.supplier] : null;
     setOrderForm({
       ...orderForm,
       itemName: val,
+      supplier: keep ? orderForm.supplier : "",
       unit: m && m.unit ? m.unit : orderForm.unit,
-      unitPrice: m && m.defaultPrice !== "" && m.defaultPrice != null ? m.defaultPrice : orderForm.unitPrice,
+      unitPrice: keep ? keep.price : (m && m.defaultPrice !== "" && m.defaultPrice != null ? m.defaultPrice : orderForm.unitPrice),
       categoryId: m && m.categoryId ? m.categoryId : orderForm.categoryId,
     });
   };
   const handlePickSupplier = (e) => {
     const val = e.target.value;
     if (val === "__manage__") { setSupplierManageOpen(true); return; }
-    setOrderForm({ ...orderForm, supplier: val });
+    if (val === "__add__") { setAddVendorOpen(true); return; }
+    const st = vendorStats[val];
+    setOrderForm({ ...orderForm, supplier: val, ...(st ? { unitPrice: st.price, unit: orderForm.unit || st.unit } : {}) });
+  };
+  // 新增／加入廠商：已存在的廠商直接選用；沒有的先新增到廠商清單，再選用
+  const addVendorForItem = () => {
+    const nm = vendorDraft.trim();
+    if (!nm) { showToast("請輸入廠商名稱"); return; }
+    if (!suppliers.some((x) => x.name === nm)) addSupplier(nm);
+    const st = vendorStats[nm];
+    setOrderForm({ ...orderForm, supplier: nm, ...(st ? { unitPrice: st.price, unit: orderForm.unit || st.unit } : {}) });
+    setVendorDraft("");
+    setAddVendorOpen(false);
   };
 
   const taxOf = (o) => (o.hasInvoice && o.applyTax ? (Number(o.amount) || 0) * (Number(o.taxRate) || 0) / 100 : 0);
@@ -2976,12 +3014,30 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
               </div>
             )}
           </Field>
-          <Field label="廠商 / 供應商" wide>
-            <select value={sortedSuppliers.some((s) => s.name === orderForm.supplier) ? orderForm.supplier : ""} onChange={handlePickSupplier}>
+          <Field label={orderForm.itemName ? "廠商 / 供應商（只列叫過這個品項的廠商）" : "廠商 / 供應商"} wide>
+            <select value={vendorNames.includes(orderForm.supplier) ? orderForm.supplier : ""} onChange={handlePickSupplier}>
               <option value="">（未指定）</option>
-              {sortedSuppliers.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+              {vendorNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              {orderForm.itemName && <option value="__add__">＋ 新增／加入其他廠商…</option>}
               <option value="__manage__">＋ 管理廠商清單…</option>
             </select>
+            {orderForm.itemName && (() => {
+              const st = vendorStats[orderForm.supplier];
+              if (orderForm.supplier && st) return <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>「{orderForm.supplier}」上次叫這個品項是 NT$ {fmtNum(st.price)}（{st.date || "—"}，共叫過 {st.count} 次），單價已帶入，這筆可以再調整。</div>;
+              if (orderForm.supplier) return <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>「{orderForm.supplier}」還沒叫過這個品項，單價請自己填。</div>;
+              if (vendorNames.length === 0) return <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>這個品項還沒有叫過貨的廠商，請選「＋ 新增／加入其他廠商」。</div>;
+              return <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>選廠商後，會帶入那間廠商上次叫這個品項的價格。</div>;
+            })()}
+            {addVendorOpen && (
+              <div className="wel-material-manager">
+                <div className="wel-material-add-row">
+                  <input placeholder="廠商名稱（已有的廠商直接輸入名稱就會選用）" list="wel-vendor-names" value={vendorDraft} onChange={(e) => setVendorDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addVendorForItem())} />
+                  <datalist id="wel-vendor-names">{sortedSuppliers.map((x) => <option key={x.id} value={x.name} />)}</datalist>
+                  <button type="button" className="wel-btn-ghost" onClick={addVendorForItem}><Plus size={13} /> 加入並選用</button>
+                  <button type="button" className="wel-btn-ghost" onClick={() => { setAddVendorOpen(false); setVendorDraft(""); }}>取消</button>
+                </div>
+              </div>
+            )}
             {supplierManageOpen && (
               <div className="wel-material-manager">
                 <div className="wel-material-add-row">
