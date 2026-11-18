@@ -1893,8 +1893,15 @@ export default function WaterElectricLedger() {
       scheduleItems.some((i) => i.siteId === id) ||
       contractWorkLogs.some((l) => l.siteId === id) ||
       contractItems.some((it) => it.siteId === id) ||
-      discussionItems.some((d) => d.siteId === id);
-    if (hasData) { showToast("此案場已有叫貨、領料、出工或發包紀錄，無法刪除"); return; }
+      discussionItems.some((d) => d.siteId === id) ||
+      notebookItems.some((n) => n.siteId === id) ||
+      clientAdditions.some((a) => a.siteId === id) ||
+      capitalContributions.some((c) => c.siteId === id) ||
+      otherExpenses.some((e) => e.siteId === id) ||
+      fixedAssets.some((f) => f.siteId === id) ||
+      receipts.some((r) => r.siteId === id) ||
+      estimates.some((e) => e.siteId === id);
+    if (hasData) { showToast("此案場底下還有紀錄（叫貨、領料、出工、發包、收款、投入成本、其他支出、固定資產、收貨單、估價單等），請先刪除這些紀錄再刪案場"); return; }
     const next = sites.filter((s) => s.id !== id);
     setSites(next);
     persistSites(next);
