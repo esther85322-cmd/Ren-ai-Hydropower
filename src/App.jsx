@@ -5573,6 +5573,10 @@ function ClientClaimsPanel({ claims, payments, isAllSites, addClaim, updateClaim
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState(null);
   const [draft, setDraft] = useState(null);
+  const [openMap, setOpenMap] = useState({}); // 沒點過的：最新一期預設展開，其他收合
+  const latestId = sorted.length ? sorted[sorted.length - 1].id : null;
+  const isOpenClaim = (id) => (openMap[id] !== undefined ? openMap[id] : id === latestId);
+  const setAllOpen = (v) => setOpenMap(Object.fromEntries(sorted.map((c) => [c.id, v])));
   const am = claimAmounts(form.untaxed);
   const submit = async () => {
     if (!(Number(form.untaxed) > 0)) { showToast("請填寫「本期請款金額（未稅）」"); return; }
@@ -5592,22 +5596,35 @@ function ClientClaimsPanel({ claims, payments, isAllSites, addClaim, updateClaim
         <div><b>🧾 領票時間：每月 17～20 日</b>　<span style={{ color: rm.pickState === "now" ? "var(--teal)" : "var(--amber)", fontWeight: 600 }}>{pickText}</span></div>
       </div>
 
+      {sorted.length > 1 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <button type="button" className="wel-btn-ghost" onClick={() => setAllOpen(true)}><ChevronDown size={13} /> 全部展開</button>
+          <button type="button" className="wel-btn-ghost" onClick={() => setAllOpen(false)}><ChevronUp size={13} /> 全部收合</button>
+        </div>
+      )}
       {sorted.length === 0 && <Empty text="尚未新增請款單" />}
       {sorted.map((c) => {
         const am2 = claimAmounts(c.untaxed);
         const linked = payments.filter((x) => x.claimId === c.id);
         const inTime = dayOf(c.claimDate) <= CLAIM_SEND_DEADLINE;
         const isEdit = editId === c.id && draft;
+        const open = isOpenClaim(c.id) || !!isEdit;
         return (
           <div key={c.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <b style={{ fontSize: 16, color: "var(--teal)" }}>第 {c.period} 期</b>
+              <button type="button" onClick={() => setOpenMap({ ...openMap, [c.id]: !open })} title={open ? "點一下收合" : "點一下展開"}
+                style={{ background: "none", border: 0, color: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, padding: 0 }}>
+                {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                <b style={{ fontSize: 16, color: "var(--teal)" }}>第 {c.period} 期</b>
+              </button>
               <span className="mono">請款日期 {c.claimDate}</span>
               <span className="wel-chip" style={{ color: inTime ? "var(--green)" : "var(--amber)" }}>{inTime ? `✓ ${c.claimDate.slice(5, 7)} 月 20 日前送出` : `已逾 ${c.claimDate.slice(5, 7)} 月 20 日，算下個月的票`}</span>
+              {!open && <span className="mono muted" style={{ fontSize: 12.5 }}>總請款 <b style={{ color: "var(--teal)" }}>{fmtMoney(am2.net)}</b>　{(c.files || []).length} 個檔案　{linked.length > 0 ? "已登記收款" : "未登記收款"}</span>}
               <span style={{ flex: 1 }} />
-              {!isAllSites && !isEdit && <button type="button" className="wel-btn-ghost" onClick={() => { setEditId(c.id); setDraft({ period: c.period, claimDate: c.claimDate, untaxed: c.untaxed, note: c.note || "" }); }}><Pencil size={13} /> 編輯</button>}
+              {!isAllSites && !isEdit && <button type="button" className="wel-btn-ghost" onClick={() => { setOpenMap({ ...openMap, [c.id]: true }); setEditId(c.id); setDraft({ period: c.period, claimDate: c.claimDate, untaxed: c.untaxed, note: c.note || "" }); }}><Pencil size={13} /> 編輯</button>}
               {!isAllSites && <button type="button" className="wel-icon-btn" title="刪除這期請款單" onClick={() => deleteClaim(c.id)}><Trash2 size={14} /></button>}
             </div>
+            {open && (<>
             {isEdit ? (
               <div style={{ marginTop: 10 }}>
                 <div className="wel-form-grid">
@@ -5658,6 +5675,7 @@ function ClientClaimsPanel({ claims, payments, isAllSites, addClaim, updateClaim
                 : <span className="muted">這期還沒登記收款</span>}
               {!isAllSites && linked.length === 0 && <button type="button" className="wel-btn-ghost" onClick={() => payForClaim(c, am2)}><Banknote size={13} /> 登記這期收款（帶入含稅金額、保留款 5%）</button>}
             </div>
+            </>)}
           </div>
         );
       })}
