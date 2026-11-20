@@ -7811,12 +7811,29 @@ function EstimateTab({
   );
 }
 
+// 解決方法輸入：打字時只改本機，離開輸入框（或按 Enter）才存一次，避免每個字都寫進資料庫
+function NotebookSolution({ value, done, onSave }) {
+  const [v, setV] = useState(value);
+  const commit = () => { if (v.trim() !== value.trim()) onSave(v.trim()); };
+  return (
+    <input
+      placeholder={done ? "記下怎麼解決的…" : "未完成也可以先記（點左側圓圈標記為已完成）"}
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+    />
+  );
+}
+
 function NotebookTab({
   notebookItems, siteById, notebookForm, setNotebookForm, submitNotebookItem, updateNotebookItem, deleteNotebookItem,
   isAllSites, sites, setCurrentSiteId, showToast,
 }) {
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
+  const [filter, setFilter] = useState("all"); // all | open | done
+  const toggleDone = (n) => updateNotebookItem(n.id, n.done ? { done: false } : { done: true, doneDate: localToday() });
   const startEdit = (n) => { setEditingId(n.id); setEditDraft({ date: n.date, title: n.title, content: n.content || "" }); };
   const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
   const saveEdit = (id) => {
@@ -7826,15 +7843,17 @@ function NotebookTab({
     setEditDraft(null);
   };
   const sortedItems = useMemo(() => notebookItems.slice().sort((a, b) => (a.date < b.date ? 1 : -1)), [notebookItems]);
+  const openCount = notebookItems.filter((n) => !n.done).length;
+  const shownItems = useMemo(() => sortedItems.filter((n) => (filter === "open" ? !n.done : filter === "done" ? !!n.done : true)), [sortedItems, filter]);
 
   const handleExportExcel = () => exportExcel("大項記事本", [{
     name: "記事本",
-    rows: sortedItems.map((n) => ({ 日期: n.date, 標題: n.title, 內容: n.content || "" })),
+    rows: sortedItems.map((n) => ({ 日期: n.date, 標題: n.title, 內容: n.content || "", 狀態: n.done ? "已完成" : "未完成", 完成日: n.done ? (n.doneDate || "") : "", 解決方法: n.solution || "" })),
   }]);
   const handleExportWord = () => exportWord("大項記事本", "大項記事本", [{
     title: "大項記事本",
-    headers: ["日期", "標題", "內容"],
-    rows: sortedItems.map((n) => [n.date, n.title, n.content || ""]),
+    headers: ["日期", "標題", "內容", "狀態", "解決方法"],
+    rows: sortedItems.map((n) => [n.date, n.title, n.content || "", n.done ? `已完成${n.doneDate ? `（${n.doneDate}）` : ""}` : "未完成", n.solution || ""]),
   }]);
 
   return (
@@ -7845,6 +7864,15 @@ function NotebookTab({
           <h1 className="wel-h1">大項記事本</h1>
         </div>
         <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+        <div className="wel-export-bar">
+          <div className="wel-filter">
+            <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+              <option value="all">全部（{notebookItems.length}）</option>
+              <option value="open">未完成（{openCount}）</option>
+              <option value="done">已完成（{notebookItems.length - openCount}）</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增記事本項目" />}
@@ -7866,9 +7894,9 @@ function NotebookTab({
       </div>
 
       <div className="wel-discussion-list">
-        {sortedItems.length === 0 && <div className="wel-card"><Empty text="尚無記事本項目" /></div>}
-        {sortedItems.map((n) => (
-          <div key={n.id} className="wel-discussion-card">
+        {shownItems.length === 0 && <div className="wel-card"><Empty text={notebookItems.length ? "沒有符合的項目" : "尚無記事本項目"} /></div>}
+        {shownItems.map((n) => (
+          <div key={n.id} className={"wel-discussion-card" + (n.done ? " resolved" : "")}>
             {editingId === n.id ? (
               <div className="wel-timeline-wrap" style={{ padding: 0 }}>
                 <div className="wel-form-grid">
@@ -7890,13 +7918,21 @@ function NotebookTab({
             ) : (
               <>
                 <div className="wel-discussion-head">
-                  <span className="wel-discussion-topic">{n.title}</span>
+                  <button type="button" className="wel-status-btn" onClick={() => toggleDone(n)} title="點擊切換已完成／未完成">
+                    {n.done ? <CheckCircle2 size={17} color="var(--green)" /> : <Circle size={17} color="var(--text-muted)" />}
+                  </button>
+                  <span className="wel-discussion-topic" style={n.done ? { textDecoration: "line-through", opacity: 0.7 } : undefined}>{n.title}</span>
+                  {n.done && <span className="wel-chip-info">已完成{n.doneDate ? `　${n.doneDate}` : ""}</span>}
                   {isAllSites && <span className="wel-tag">{siteById[n.siteId]?.name || "—"}</span>}
                   <span className="mono muted" style={{ fontSize: 11.5 }}>{n.date}</span>
                   <button className="wel-icon-btn" onClick={() => startEdit(n)}><Pencil size={14} /></button>
                   <button className="wel-icon-btn" onClick={() => deleteNotebookItem(n.id)}><Trash2 size={14} /></button>
                 </div>
                 {n.content && <div className="wel-discussion-note muted">{n.content}</div>}
+                <div className="wel-discussion-result">
+                  <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)" }}>解決方法：</span>
+                  <NotebookSolution key={n.id + (n.solution || "")} value={n.solution || ""} done={!!n.done} onSave={(v) => updateNotebookItem(n.id, { solution: v })} />
+                </div>
               </>
             )}
           </div>
