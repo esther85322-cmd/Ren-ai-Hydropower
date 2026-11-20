@@ -54,6 +54,27 @@ const isReceived = (p) => payDueDate(p) <= localToday();
 const warrantyOf = (p) => (p.releasesWarranty ? 0 : Number(p.warrantyAmount) || 0);
 const netAmt = (p) => (Number(p.amount) || 0) - warrantyOf(p);
 const receivedAmt = (p) => (isReceived(p) ? netAmt(p) : 0);
+
+// ---- 請款單（期數）：每月 20 日前要送請款單，每月 17～20 日領票 ----
+const CLAIM_SEND_DEADLINE = 20, CHECK_PICKUP_FROM = 17, CHECK_PICKUP_TO = 20;
+const ymdStr = (y, m, d) => { const t = new Date(y, m - 1, d); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
+// 未稅 → 營業稅 5% → 含稅 → 保留款（含稅的 5%）→ 扣保留款後總請款金額
+const claimAmounts = (untaxed) => {
+  const base = Math.round(Number(untaxed) || 0);
+  const tax = Math.round(base * 0.05);
+  const gross = base + tax;
+  const retention = Math.round(gross * 0.05);
+  return { untaxed: base, tax, gross, retention, net: gross - retention };
+};
+const claimRemind = (today) => {
+  const [y, m, d] = today.split("-").map(Number);
+  const sendDate = d <= CLAIM_SEND_DEADLINE ? ymdStr(y, m, CLAIM_SEND_DEADLINE) : ymdStr(y, m + 1, CLAIM_SEND_DEADLINE);
+  let pickState = "upcoming", pickFrom, pickTo;
+  if (d < CHECK_PICKUP_FROM) { pickFrom = ymdStr(y, m, CHECK_PICKUP_FROM); pickTo = ymdStr(y, m, CHECK_PICKUP_TO); }
+  else if (d <= CHECK_PICKUP_TO) { pickState = "now"; pickFrom = ymdStr(y, m, CHECK_PICKUP_FROM); pickTo = ymdStr(y, m, CHECK_PICKUP_TO); }
+  else { pickFrom = ymdStr(y, m + 1, CHECK_PICKUP_FROM); pickTo = ymdStr(y, m + 1, CHECK_PICKUP_TO); }
+  return { sendDate, sendLeft: daysBetween(today, sendDate), pickState, pickFrom, pickTo, pickLeft: daysBetween(today, pickFrom), pickEndLeft: daysBetween(today, pickTo) };
+};
 const WARRANTY_RATES = Array.from({ length: 11 }, (_, i) => i);
 const payTypeText = (p) => (p.payType === "term" ? `${Number(p.days) || 0} 天票` : p.payType === "sight" ? "即期票" : "匯款／現金");
 const fmtMoney = (n) =>
@@ -228,6 +249,9 @@ export default function WaterElectricLedger() {
   const [capitalContributions, setCapitalContributions] = useState([]);
   const [fixedAssets, setFixedAssets] = useState([]);
   const [otherExpenses, setOtherExpenses] = useState([]);
+  const [clientClaims, setClientClaims] = useState([]);
+  const clientClaimsRef = useRef(clientClaims);
+  clientClaimsRef.current = clientClaims;
 
   // ---- load ----
   useEffect(() => {
@@ -260,6 +284,7 @@ export default function WaterElectricLedger() {
       const cc = data.capitalcontributions ?? [];
       const fa = data.fixedassets ?? [];
       const oe = data.otherexpenses ?? [];
+      const ccl = data.clientclaims ?? [];
       const siteList = st && st.length ? st : [DEFAULT_SITE];
       const fallbackSiteId = siteList[0].id;
       // migrate legacy records created before 案場 (site) existed
@@ -302,6 +327,7 @@ export default function WaterElectricLedger() {
       setCapitalContributions(cc);
       setFixedAssets(fa);
       setOtherExpenses(oe);
+      setClientClaims(ccl);
       setLoading(false);
       if (!ok) {
         // The read itself failed (network/auth hiccup) — do NOT run any of the
@@ -424,6 +450,11 @@ export default function WaterElectricLedger() {
     setWorkflow(next);
     persistWorkflow(next);
   };
+  const persistClientClaims = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("clientclaims", list);
+    setSaving(false);
+  }, []);
   const persistReceipts = useCallback(async (list) => {
     setSaving(true);
     await storageSet("receipts", list);
@@ -559,6 +590,10 @@ export default function WaterElectricLedger() {
   const siteEstimates = useMemo(
     () => (isAllSites ? estimates : estimates.filter((l) => l.siteId === currentSiteId)),
     [estimates, currentSiteId, isAllSites]
+  );
+  const siteClientClaims = useMemo(
+    () => (isAllSites ? clientClaims : clientClaims.filter((c) => c.siteId === currentSiteId)),
+    [clientClaims, currentSiteId, isAllSites]
   );
   const siteReceipts = useMemo(
     () => (isAllSites ? receipts : receipts.filter((r) => r.siteId === currentSiteId)),
@@ -801,7 +836,7 @@ export default function WaterElectricLedger() {
   const [contractForm, setContractForm] = useState(emptyContract);
   const emptyPayment = { contractId: "", date: todayStr(), amount: "", note: "" };
   const [paymentForm, setPaymentForm] = useState(emptyPayment);
-  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "", split: false, amount1: "", payType2: "term", days2: 30, warrantyRate: null, releasesWarranty: false };
+  const emptyClientPayment = { date: localToday(), amount: "", item: "", note: "", payType: "cash", days: 30, additionId: "", split: false, amount1: "", payType2: "term", days2: 30, warrantyRate: null, releasesWarranty: false, claimId: "" };
   const [clientPaymentForm, setClientPaymentForm] = useState(emptyClientPayment);
   const emptyDiscussion = { date: todayStr(), topic: "", note: "", resolved: false, result: "" };
   const [discussionForm, setDiscussionForm] = useState(emptyDiscussion);
@@ -1175,6 +1210,61 @@ export default function WaterElectricLedger() {
     persistReceipts(next);
   };
 
+  // ---- 請款單（期數）：每期一筆，附請款單檔案（Word／PDF），記請款日期 ----
+  const addClientClaim = async ({ period, claimDate, untaxed, note, files }) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增請款單"); return false; }
+    const siteClaims = clientClaimsRef.current.filter((c) => c.siteId === currentSiteId);
+    const nextPeriod = siteClaims.reduce((m, c) => Math.max(m, Number(c.period) || 0), 0) + 1;
+    const per = Number(period) || nextPeriod;
+    if (siteClaims.some((c) => Number(c.period) === per)) { showToast(`第 ${per} 期已經有請款單了，請改期數或直接編輯那一期`); return false; }
+    if (!claimDate) { showToast("請填寫請款日期"); return false; }
+    const metas = [];
+    for (const f of files || []) {
+      const meta = await uploadFileMeta(f);
+      if (!meta) { metas.forEach((m) => fileRemove(m.id, m.chunks)); return false; }
+      metas.push(meta);
+    }
+    const rec = { id: uid(), siteId: currentSiteId, period: per, claimDate, untaxed: Math.round(Number(untaxed) || 0), note: (note || "").trim(), files: metas };
+    const next = [...clientClaimsRef.current, rec];
+    setClientClaims(next);
+    persistClientClaims(next);
+    showToast(`已儲存第 ${per} 期請款單（${metas.length} 個檔案）`);
+    return true;
+  };
+  const updateClientClaim = (id, patch) => {
+    const next = clientClaimsRef.current.map((c) => (c.id === id ? { ...c, ...patch } : c));
+    setClientClaims(next);
+    persistClientClaims(next);
+  };
+  const deleteClientClaim = (id) => {
+    const rec = clientClaimsRef.current.find((c) => c.id === id);
+    if (!rec || !window.confirm(`確定要刪除第 ${rec.period} 期請款單（含 ${rec.files?.length || 0} 個檔案）嗎？刪除後無法復原。已登記的收款紀錄不會被刪。`)) return;
+    (rec.files || []).forEach((f) => fileRemove(f.id, f.chunks));
+    const next = clientClaimsRef.current.filter((c) => c.id !== id);
+    setClientClaims(next);
+    persistClientClaims(next);
+  };
+  const addClaimFiles = async (id, files) => {
+    const metas = [];
+    for (const f of files) {
+      const meta = await uploadFileMeta(f);
+      if (!meta) { metas.forEach((m) => fileRemove(m.id, m.chunks)); return false; }
+      metas.push(meta);
+    }
+    const next = clientClaimsRef.current.map((c) => (c.id === id ? { ...c, files: [...(c.files || []), ...metas] } : c));
+    setClientClaims(next);
+    persistClientClaims(next);
+    showToast(`已上傳 ${metas.length} 個檔案`);
+    return true;
+  };
+  const removeClaimFile = (id, file) => {
+    if (!window.confirm(`確定要刪除檔案「${file.name}」嗎？刪除後無法復原。`)) return;
+    const next = clientClaimsRef.current.map((c) => (c.id === id ? { ...c, files: (c.files || []).filter((f) => f.id !== file.id) } : c));
+    setClientClaims(next);
+    persistClientClaims(next);
+    fileRemove(file.id, file.chunks);
+  };
+
   // ---- 估價單（僅供對照，不計入任何總結算） ----
   const addEstimateLines = (rows) => {
     if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增估價項目"); return; }
@@ -1447,6 +1537,7 @@ export default function WaterElectricLedger() {
       if (releasesWarranty) rec.releasesWarranty = true;
       if (pt.payType === "term") rec.days = Number(pt.days);
       if (!rec.additionId) delete rec.additionId;
+      if (!rec.claimId) delete rec.claimId;
       if (splitId) { rec.splitId = splitId; rec.note = [`分票 ${i + 1}/${parts.length}`, base.note].filter(Boolean).join("，"); }
       return rec;
     });
@@ -1900,6 +1991,7 @@ export default function WaterElectricLedger() {
       otherExpenses.some((e) => e.siteId === id) ||
       fixedAssets.some((f) => f.siteId === id) ||
       receipts.some((r) => r.siteId === id) ||
+      clientClaims.some((c) => c.siteId === id) ||
       estimates.some((e) => e.siteId === id);
     if (hasData) { showToast("此案場底下還有紀錄（叫貨、領料、出工、發包、收款、投入成本、其他支出、固定資產、收貨單、估價單等），請先刪除這些紀錄再刪案場"); return; }
     const next = sites.filter((s) => s.id !== id);
@@ -2229,6 +2321,13 @@ export default function WaterElectricLedger() {
           {tab === "client" && (
             <ClientPaymentsTab
               clientPayments={siteClientPayments}
+              claims={siteClientClaims}
+              addClientClaim={addClientClaim}
+              updateClientClaim={updateClientClaim}
+              deleteClientClaim={deleteClientClaim}
+              addClaimFiles={addClaimFiles}
+              removeClaimFile={removeClaimFile}
+              openClaimFile={openContractFile}
               siteById={siteById}
               currentSite={siteById[currentSiteId]}
               clientPaymentForm={clientPaymentForm}
@@ -5463,7 +5562,128 @@ function ClientScheduleImport({ hasExcel, currentTotal, onConfirm, onClose }) {
   );
 }
 
+// 請款單（期數）：每期一張請款單（Word／PDF）＋請款日期；並提醒每月 17～20 日領票、20 日前送請款單
+function ClientClaimsPanel({ claims, payments, isAllSites, addClaim, updateClaim, deleteClaim, addFiles, removeFile, openFile, payForClaim, showToast }) {
+  const today = localToday();
+  const rm = useMemo(() => claimRemind(today), [today]);
+  const sorted = useMemo(() => claims.slice().sort((a, b) => (Number(a.period) || 0) - (Number(b.period) || 0)), [claims]);
+  const nextPeriod = sorted.reduce((m, c) => Math.max(m, Number(c.period) || 0), 0) + 1;
+  const [form, setForm] = useState({ period: "", claimDate: today, untaxed: "", note: "", files: [] });
+  const [fileKey, setFileKey] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const am = claimAmounts(form.untaxed);
+  const submit = async () => {
+    if (!(Number(form.untaxed) > 0)) { showToast("請填寫「本期請款金額（未稅）」"); return; }
+    setBusy(true);
+    const ok = await addClaim({ ...form, period: form.period || nextPeriod });
+    setBusy(false);
+    if (ok) { setForm({ period: "", claimDate: localToday(), untaxed: "", note: "", files: [] }); setFileKey((k) => k + 1); }
+  };
+  const sendState = rm.sendLeft === 0 ? { text: "今天就是送請款單的截止日（每月 20 日）", warn: true } : rm.sendLeft <= 3 ? { text: `距離送請款單截止（${rm.sendDate}）只剩 ${rm.sendLeft} 天`, warn: true } : { text: `下次送請款單截止：${rm.sendDate}（${rm.sendLeft} 天後）`, warn: false };
+  const pickText = rm.pickState === "now" ? (rm.pickEndLeft === 0 ? "今天是本月領票的最後一天（17～20 日）" : `現在是領票時間（${rm.pickFrom.slice(5)}～${rm.pickTo.slice(5)}），還有 ${rm.pickEndLeft} 天`) : `下次領票時間：${rm.pickFrom}～${rm.pickTo.slice(5)}（${rm.pickLeft} 天後開始）`;
+  const dayOf = (d) => Number((d || "").slice(8, 10)) || 0;
+  return (
+    <div className="wel-card" style={{ marginBottom: 12 }}>
+      <div className="wel-card-title"><FileText size={14} /> 請款單（期數）</div>
+      <div style={{ display: "grid", gap: 6, marginBottom: 12, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "rgba(232,163,61,0.08)", fontSize: 13.5 }}>
+        <div><b>📄 送請款單：每月 20 日前</b>　<span style={{ color: sendState.warn ? "var(--red)" : "var(--amber)", fontWeight: 600 }}>{sendState.text}</span></div>
+        <div><b>🧾 領票時間：每月 17～20 日</b>　<span style={{ color: rm.pickState === "now" ? "var(--teal)" : "var(--amber)", fontWeight: 600 }}>{pickText}</span></div>
+      </div>
+
+      {sorted.length === 0 && <Empty text="尚未新增請款單" />}
+      {sorted.map((c) => {
+        const am2 = claimAmounts(c.untaxed);
+        const linked = payments.filter((x) => x.claimId === c.id);
+        const inTime = dayOf(c.claimDate) <= CLAIM_SEND_DEADLINE;
+        const isEdit = editId === c.id && draft;
+        return (
+          <div key={c.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <b style={{ fontSize: 16, color: "var(--teal)" }}>第 {c.period} 期</b>
+              <span className="mono">請款日期 {c.claimDate}</span>
+              <span className="wel-chip" style={{ color: inTime ? "var(--green)" : "var(--amber)" }}>{inTime ? `✓ ${c.claimDate.slice(5, 7)} 月 20 日前送出` : `已逾 ${c.claimDate.slice(5, 7)} 月 20 日，算下個月的票`}</span>
+              <span style={{ flex: 1 }} />
+              {!isAllSites && !isEdit && <button type="button" className="wel-btn-ghost" onClick={() => { setEditId(c.id); setDraft({ period: c.period, claimDate: c.claimDate, untaxed: c.untaxed, note: c.note || "" }); }}><Pencil size={13} /> 編輯</button>}
+              {!isAllSites && <button type="button" className="wel-icon-btn" title="刪除這期請款單" onClick={() => deleteClaim(c.id)}><Trash2 size={14} /></button>}
+            </div>
+            {isEdit ? (
+              <div style={{ marginTop: 10 }}>
+                <div className="wel-form-grid">
+                  <Field label="期數"><input type="number" min="1" value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })} /></Field>
+                  <Field label="請款日期"><input type="date" value={draft.claimDate} onChange={(e) => setDraft({ ...draft, claimDate: e.target.value })} /></Field>
+                  <Field label="本期請款金額（未稅）"><input type="number" min="0" step="any" value={draft.untaxed} onChange={(e) => setDraft({ ...draft, untaxed: e.target.value })} /></Field>
+                  <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" className="wel-btn-primary" onClick={() => {
+                    const per = Number(draft.period) || c.period;
+                    if (claims.some((x) => x.id !== c.id && Number(x.period) === per)) { showToast(`第 ${per} 期已經存在`); return; }
+                    updateClaim(c.id, { period: per, claimDate: draft.claimDate || c.claimDate, untaxed: Math.round(Number(draft.untaxed) || 0), note: draft.note.trim() });
+                    setEditId(null); setDraft(null);
+                  }}>儲存修改</button>
+                  <button type="button" className="wel-btn-ghost" onClick={() => { setEditId(null); setDraft(null); }}>取消</button>
+                </div>
+              </div>
+            ) : (
+              <div className="wel-labor-summary" style={{ marginTop: 10 }}>
+                <div className="wel-labor-stat"><span>本期請款（未稅）</span><b>{fmtMoney(am2.untaxed)}</b></div>
+                <div className="wel-labor-stat"><span>營業稅 5%</span><b>{fmtMoney(am2.tax)}</b></div>
+                <div className="wel-labor-stat"><span>含稅金額</span><b>{fmtMoney(am2.gross)}</b></div>
+                <div className="wel-labor-stat"><span>保留款（含稅 5%）</span><b style={{ color: "var(--amber)" }}>－{fmtMoney(am2.retention)}</b></div>
+                <div className="wel-labor-stat"><span>扣除保留款後總請款金額</span><b style={{ color: "var(--teal)" }}>{fmtMoney(am2.net)}</b></div>
+              </div>
+            )}
+            {c.note && !isEdit && <div className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>{c.note}</div>}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+              {(c.files || []).map((f) => (
+                <span key={f.id} className="wel-chip-info" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <button type="button" className="wel-link-btn" style={{ background: "none", border: 0, color: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }} onClick={() => openFile(f)} title="點一下開啟／下載">
+                    <Paperclip size={12} /> {f.name} <span className="muted">（{fmtSize(f.size)}）</span>
+                  </button>
+                  {!isAllSites && <button type="button" className="wel-icon-btn" onClick={() => removeFile(c.id, f)}><X size={11} /></button>}
+                </span>
+              ))}
+              {!isAllSites && (
+                <label className="wel-btn-ghost" style={{ cursor: "pointer" }}>
+                  <Upload size={13} /> 加檔案
+                  <input type="file" multiple style={{ display: "none" }} onChange={async (e) => { const fs = Array.from(e.target.files || []); e.target.value = ""; if (fs.length) await addFiles(c.id, fs); }} />
+                </label>
+              )}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12.5, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              {linked.length > 0
+                ? <span className="muted">已登記收款：{linked.map((x) => `${x.date}　請款 ${fmtMoney(x.amount)}、實收 ${fmtMoney(netAmt(x))}（${isReceived(x) ? "已入帳" : `${payDueDate(x)} 入帳`}）`).join("；")}</span>
+                : <span className="muted">這期還沒登記收款</span>}
+              {!isAllSites && linked.length === 0 && <button type="button" className="wel-btn-ghost" onClick={() => payForClaim(c, am2)}><Banknote size={13} /> 登記這期收款（帶入含稅金額、保留款 5%）</button>}
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ marginTop: 14, ...(isAllSites ? { opacity: 0.5, pointerEvents: "none" } : null) }}>
+        <div className="wel-card-title" style={{ fontSize: 13 }}><Plus size={13} /> 新增一期請款單</div>
+        <div className="wel-form-grid">
+          <Field label="期數"><input type="number" min="1" placeholder={`第 ${nextPeriod} 期`} value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} /></Field>
+          <Field label="請款日期"><input type="date" value={form.claimDate} onChange={(e) => setForm({ ...form, claimDate: e.target.value })} /></Field>
+          <Field label="本期請款金額（未稅）">
+            <input type="number" min="0" step="any" value={form.untaxed} onChange={(e) => setForm({ ...form, untaxed: e.target.value })} />
+            {am.untaxed > 0 && <div className="muted mono" style={{ fontSize: 11.5, marginTop: 3 }}>稅 {fmtMoney(am.tax)}、含稅 {fmtMoney(am.gross)}、保留款 {fmtMoney(am.retention)}，總請款 {fmtMoney(am.net)}</div>}
+          </Field>
+          <Field label="請款單檔案（Word／PDF，可多選）" wide>
+            <input key={fileKey} type="file" multiple onChange={(e) => setForm({ ...form, files: Array.from(e.target.files || []) })} />
+          </Field>
+          <Field label="備註" wide><input placeholder="選填，例：地下室筏基樓版澆置完成＋施工圖一半" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+        </div>
+        <button type="button" className="wel-btn-primary" disabled={busy} onClick={submit}><Plus size={15} /> {busy ? "上傳中…" : "新增請款單"}</button>
+      </div>
+    </div>
+  );
+}
+
 function ClientPaymentsTab({
+  claims, addClientClaim, updateClientClaim, deleteClientClaim, addClaimFiles, removeClaimFile, openClaimFile,
   clientPayments, siteById, currentSite, clientPaymentForm, setClientPaymentForm, submitClientPayment, deleteClientPayment, updateClientPayment,
   clientPaidTotal, clientPendingTotal, warrantyStats, additions, addClientAddition, updateClientAddition, deleteClientAddition, importClientSchedule,
   projectGrandTotal, profitLoss, isAllSites, currentSiteId,
@@ -5561,6 +5781,13 @@ function ClientPaymentsTab({
           </div>
         )}
       </div>
+
+      <ClientClaimsPanel
+        claims={claims} payments={clientPayments} isAllSites={isAllSites}
+        addClaim={addClientClaim} updateClaim={updateClientClaim} deleteClaim={deleteClientClaim}
+        addFiles={addClaimFiles} removeFile={removeClaimFile} openFile={openClaimFile} showToast={showToast}
+        payForClaim={(c, am) => { setClientPaymentForm({ ...clientPaymentForm, item: `第${c.period}期請款`, amount: am.gross, warrantyRate: 5, releasesWarranty: false, additionId: "", claimId: c.id, note: clientPaymentForm.note }); setTimeout(() => document.getElementById("wel-client-form")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}
+      />
 
       <div className="wel-card" style={{ marginBottom: 12 }}>
         <div className="wel-card-title"><PiggyBank size={14} /> 保固款（甲方每次請款自動暫扣）</div>
@@ -5696,6 +5923,7 @@ function ClientPaymentsTab({
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                     {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                     {p.item || "—"}
+                    {p.claimId && claims.find((c) => c.id === p.claimId) && <span className="wel-chip-info">第 {claims.find((c) => c.id === p.claimId).period} 期</span>}
                   </span>
                 </td>
                 <td className="muted">{payTypeText(p)}</td>
