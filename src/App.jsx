@@ -249,6 +249,9 @@ export default function WaterElectricLedger() {
   const [capitalContributions, setCapitalContributions] = useState([]);
   const [fixedAssets, setFixedAssets] = useState([]);
   const [otherExpenses, setOtherExpenses] = useState([]);
+  const [defects, setDefects] = useState([]);
+  const defectsRef = useRef(defects);
+  defectsRef.current = defects;
   const [clientClaims, setClientClaims] = useState([]);
   const clientClaimsRef = useRef(clientClaims);
   clientClaimsRef.current = clientClaims;
@@ -285,6 +288,7 @@ export default function WaterElectricLedger() {
       const fa = data.fixedassets ?? [];
       const oe = data.otherexpenses ?? [];
       const ccl = data.clientclaims ?? [];
+      const dfx = data.defects ?? [];
       const siteList = st && st.length ? st : [DEFAULT_SITE];
       const fallbackSiteId = siteList[0].id;
       // migrate legacy records created before 案場 (site) existed
@@ -328,6 +332,7 @@ export default function WaterElectricLedger() {
       setFixedAssets(fa);
       setOtherExpenses(oe);
       setClientClaims(ccl);
+      setDefects(dfx);
       setLoading(false);
       if (!ok) {
         // The read itself failed (network/auth hiccup) — do NOT run any of the
@@ -450,6 +455,11 @@ export default function WaterElectricLedger() {
     setWorkflow(next);
     persistWorkflow(next);
   };
+  const persistDefects = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("defects", list);
+    setSaving(false);
+  }, []);
   const persistClientClaims = useCallback(async (list) => {
     setSaving(true);
     await storageSet("clientclaims", list);
@@ -590,6 +600,10 @@ export default function WaterElectricLedger() {
   const siteEstimates = useMemo(
     () => (isAllSites ? estimates : estimates.filter((l) => l.siteId === currentSiteId)),
     [estimates, currentSiteId, isAllSites]
+  );
+  const siteDefects = useMemo(
+    () => (isAllSites ? defects : defects.filter((d) => d.siteId === currentSiteId)),
+    [defects, currentSiteId, isAllSites]
   );
   const siteClientClaims = useMemo(
     () => (isAllSites ? clientClaims : clientClaims.filter((c) => c.siteId === currentSiteId)),
@@ -1208,6 +1222,29 @@ export default function WaterElectricLedger() {
     const next = receiptsRef.current.filter((r) => r.id !== id);
     setReceipts(next);
     persistReceipts(next);
+  };
+
+  // ---- 缺失修改紀錄：發現日期、預判處理、解決日期、最後如何解決 ----
+  const addDefect = ({ foundDate, title, location, plan }) => {
+    if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增缺失紀錄"); return false; }
+    if (!title.trim()) { showToast("請填寫「缺失內容」後再新增"); return false; }
+    const rec = { id: uid(), siteId: currentSiteId, foundDate: foundDate || localToday(), title: title.trim(), location: (location || "").trim(), plan: (plan || "").trim(), resolved: false, resolvedDate: "", solution: "" };
+    const next = [rec, ...defectsRef.current];
+    setDefects(next);
+    persistDefects(next);
+    return true;
+  };
+  const updateDefect = (id, patch) => {
+    const next = defectsRef.current.map((d) => (d.id === id ? { ...d, ...patch } : d));
+    setDefects(next);
+    persistDefects(next);
+  };
+  const deleteDefect = (id) => {
+    const rec = defectsRef.current.find((d) => d.id === id);
+    if (!rec || !window.confirm(`確定要刪除缺失紀錄「${rec.title}」嗎？刪除後無法復原。`)) return;
+    const next = defectsRef.current.filter((d) => d.id !== id);
+    setDefects(next);
+    persistDefects(next);
   };
 
   // ---- 請款單（期數）：每期一筆，附請款單檔案（Word／PDF），記請款日期 ----
@@ -1992,6 +2029,7 @@ export default function WaterElectricLedger() {
       fixedAssets.some((f) => f.siteId === id) ||
       receipts.some((r) => r.siteId === id) ||
       clientClaims.some((c) => c.siteId === id) ||
+      defects.some((d) => d.siteId === id) ||
       estimates.some((e) => e.siteId === id);
     if (hasData) { showToast("此案場底下還有紀錄（叫貨、領料、出工、發包、收款、投入成本、其他支出、固定資產、收貨單、估價單等），請先刪除這些紀錄再刪案場"); return; }
     const next = sites.filter((s) => s.id !== id);
@@ -2080,6 +2118,7 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<ListOrdered size={16} />} label="項目總表" active={tab === "summary"} onClick={() => setTab("summary")} />
             <NavBtn icon={<MessageSquare size={16} />} label="備註討論" active={tab === "discussion"} onClick={() => setTab("discussion")} />
             <NavBtn icon={<NotebookPen size={16} />} label="大項記事本" active={tab === "notebook"} onClick={() => setTab("notebook")} />
+            <NavBtn icon={<AlertTriangle size={16} />} label="缺失修改紀錄" active={tab === "defects"} onClick={() => setTab("defects")} />
             <NavBtn icon={<CalendarRange size={16} />} label="工項排程" active={tab === "schedule"} onClick={() => setTab("schedule")} />
             <NavBtn icon={<Workflow size={16} />} label="施工流程" active={tab === "workflow"} onClick={() => setTab("workflow")} />
             <NavBtn icon={<Wallet size={16} />} label="甲方收款" active={tab === "client"} onClick={() => setTab("client")} />
@@ -2414,6 +2453,19 @@ export default function WaterElectricLedger() {
             />
           )}
           {tab === "workflow" && <WorkflowTab workflow={workflow} saveWorkflow={saveWorkflow} showToast={showToast} />}
+          {tab === "defects" && (
+            <DefectsTab
+              defects={siteDefects}
+              siteById={siteById}
+              isAllSites={isAllSites}
+              sites={sites}
+              setCurrentSiteId={setCurrentSiteId}
+              addDefect={addDefect}
+              updateDefect={updateDefect}
+              deleteDefect={deleteDefect}
+              showToast={showToast}
+            />
+          )}
           {tab === "notebook" && (
             <NotebookTab
               notebookItems={siteNotebookItems}
@@ -7841,6 +7893,116 @@ function NotebookSolution({ value, done, onSave }) {
       onBlur={commit}
       onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
     />
+  );
+}
+
+// 缺失修改紀錄：發現日期 → 預判如何處理 → 解決日期 → 最後如何解決
+function BlurInput({ value, placeholder, onSave, disabled }) {
+  const [v, setV] = useState(value || "");
+  const commit = () => { if (v.trim() !== (value || "").trim()) onSave(v.trim()); };
+  return (
+    <input
+      placeholder={placeholder} value={v} disabled={disabled}
+      onChange={(e) => setV(e.target.value)} onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+    />
+  );
+}
+
+function DefectsTab({ defects, siteById, isAllSites, sites, setCurrentSiteId, addDefect, updateDefect, deleteDefect, showToast }) {
+  const today = localToday();
+  const [form, setForm] = useState({ foundDate: today, title: "", location: "", plan: "" });
+  const [filter, setFilter] = useState("all"); // all | open | done
+  const sorted = useMemo(() => defects.slice().sort((a, b) => (a.foundDate < b.foundDate ? 1 : -1)), [defects]);
+  const openCount = defects.filter((d) => !d.resolved).length;
+  const shown = sorted.filter((d) => (filter === "open" ? !d.resolved : filter === "done" ? d.resolved : true));
+  const elapsed = (d) => {
+    const end = d.resolved && d.resolvedDate ? d.resolvedDate : today;
+    const n = daysBetween(d.foundDate, end);
+    return d.resolved ? `歷時 ${n} 天解決` : `已 ${n} 天未解決`;
+  };
+  const submit = () => { if (addDefect(form)) setForm({ foundDate: localToday(), title: "", location: "", plan: "" }); };
+  const toggle = (d) => updateDefect(d.id, d.resolved ? { resolved: false } : { resolved: true, resolvedDate: d.resolvedDate || localToday() });
+
+  const handleExportExcel = () => exportExcel("缺失修改紀錄", [{
+    name: "缺失修改紀錄",
+    rows: sorted.map((d) => ({ 發現日期: d.foundDate, 缺失內容: d.title, 位置: d.location || "", 預判如何處理: d.plan || "", 狀態: d.resolved ? "已解決" : "未解決", 解決日期: d.resolved ? d.resolvedDate || "" : "", 歷時天數: daysBetween(d.foundDate, d.resolved && d.resolvedDate ? d.resolvedDate : today), 最後如何解決: d.solution || "" })),
+  }]);
+  const handleExportWord = () => exportWord("缺失修改紀錄", "缺失修改紀錄", [{
+    title: "缺失修改紀錄",
+    headers: ["發現日期", "缺失內容", "位置", "預判如何處理", "解決日期", "最後如何解決"],
+    rows: sorted.map((d) => [d.foundDate, d.title, d.location || "—", d.plan || "—", d.resolved ? d.resolvedDate || "已解決" : "未解決", d.solution || "—"]),
+  }]);
+
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">品質 · DEFECT LOG</div>
+          <h1 className="wel-h1">缺失修改紀錄</h1>
+        </div>
+        <ExportBar onExcel={handleExportExcel} onWord={handleExportWord} />
+        <div className="wel-export-bar">
+          <div className="wel-filter">
+            <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+              <option value="all">全部（{defects.length}）</option>
+              <option value="open">未解決（{openCount}）</option>
+              <option value="done">已解決（{defects.length - openCount}）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {isAllSites && <AllSitesNotice sites={sites} setCurrentSiteId={setCurrentSiteId} action="新增缺失紀錄" />}
+
+      <div className="wel-card wel-form" style={isAllSites ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+        <div className="wel-card-title"><AlertTriangle size={14} /> 新增缺失</div>
+        <div className="wel-form-grid">
+          <Field label="發現日期"><input type="date" value={form.foundDate} onChange={(e) => setForm({ ...form, foundDate: e.target.value })} /></Field>
+          <Field label="位置／樓層（選填）"><input placeholder="例：3F 浴室" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+          <Field label="缺失內容" wide><input placeholder="例：給水管接頭滲水" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
+          <Field label="預判如何處理" wide><input placeholder="例：拆開接頭重新黏合後試水" value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })} /></Field>
+        </div>
+        <button type="button" className="wel-btn-primary" onClick={submit}><Plus size={15} /> 新增缺失紀錄</button>
+      </div>
+
+      <div className="wel-discussion-list">
+        {shown.length === 0 && <div className="wel-card"><Empty text={defects.length ? "沒有符合的項目" : "尚無缺失紀錄"} /></div>}
+        {shown.map((d) => (
+          <div key={d.id} className={"wel-discussion-card" + (d.resolved ? " resolved" : "")}>
+            <div className="wel-discussion-head">
+              <button type="button" className="wel-status-btn" onClick={() => toggle(d)} title="點擊切換已解決／未解決">
+                {d.resolved ? <CheckCircle2 size={17} color="var(--green)" /> : <Circle size={17} color="var(--text-muted)" />}
+              </button>
+              <span className="wel-discussion-topic" style={d.resolved ? { textDecoration: "line-through", opacity: 0.7 } : undefined}>{d.title}</span>
+              {d.location && <span className="wel-tag">{d.location}</span>}
+              {isAllSites && <span className="wel-tag">{siteById[d.siteId]?.name || "—"}</span>}
+              <span className="wel-chip" style={{ color: d.resolved ? "var(--green)" : "var(--amber)" }}>{elapsed(d)}</span>
+              <button className="wel-icon-btn" onClick={() => deleteDefect(d.id)}><Trash2 size={14} /></button>
+            </div>
+            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+              <div className="wel-discussion-result">
+                <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", minWidth: 84 }}>發現日期：</span>
+                <input type="date" value={d.foundDate} onChange={(e) => e.target.value && updateDefect(d.id, { foundDate: e.target.value })} style={{ maxWidth: 170 }} />
+              </div>
+              <div className="wel-discussion-result">
+                <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", minWidth: 84 }}>預判處理：</span>
+                <BlurInput key={"p" + d.id + (d.plan || "")} value={d.plan} placeholder="預判要怎麼處理…" onSave={(v) => updateDefect(d.id, { plan: v })} />
+              </div>
+              <div className="wel-discussion-result">
+                <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", minWidth: 84 }}>解決日期：</span>
+                <input type="date" value={d.resolvedDate || ""} disabled={!d.resolved} onChange={(e) => updateDefect(d.id, { resolvedDate: e.target.value })} style={{ maxWidth: 170 }} />
+                {!d.resolved && <span className="muted" style={{ fontSize: 11.5 }}>（點左上圓圈標記已解決，會自動帶入今天）</span>}
+              </div>
+              <div className="wel-discussion-result">
+                <span className="muted" style={{ fontSize: 11.5, fontFamily: "var(--font-mono)", minWidth: 84 }}>最後解決：</span>
+                <BlurInput key={"s" + d.id + (d.solution || "")} value={d.solution} placeholder={d.resolved ? "記下最後是怎麼解決的…" : "解決後再記，也可以先寫"} onSave={(v) => updateDefect(d.id, { solution: v })} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
