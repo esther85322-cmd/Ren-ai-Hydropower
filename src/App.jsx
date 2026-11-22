@@ -61,9 +61,27 @@ const calcListUnit = (listPrice, discount) => {
   const a = Number(listPrice), b = Number(discount);
   return a > 0 && b > 0 ? Math.round(((a * b) / 100) * 1000) / 1000 : null;
 };
-const parseListNote = (note) => {
+const parseListNote = (note, unitPrice) => {
   const m = /牌價\s*([\d.]+)\s*折數\s*([\d.]+)/.exec(note || "");
-  return m ? { listPrice: m[1], discount: m[2] } : null;
+  if (m) return { listPrice: m[1], discount: m[2] };
+  // 舊紀錄的寫法：「104.9*1.56」＝牌價 × 倍率（要和單價對得上才採用）
+  const k = /(?:^|[^\d.])(\d+(?:\.\d+)?)\s*[*×]\s*(\d+(?:\.\d+)?)(?![\d.])/.exec(note || "");
+  if (k) {
+    const a = Number(k[1]), b = Number(k[2]), u = Number(unitPrice);
+    if (a > 0 && b >= 0.5 && b <= 5 && (!(u > 0) || Math.abs(a * b - u) / u < 0.02)) return { listPrice: String(a), discount: String(Math.round(b * 10000) / 100) };
+  }
+  return null;
+};
+// 一筆叫貨紀錄裡的牌價／折數（有存欄位用欄位，否則從備註讀）
+const listInfoOf = (o) => (o.listPrice && o.discount ? { listPrice: String(o.listPrice), discount: String(o.discount) } : parseListNote(o.note, o.unitPrice));
+// 依單據（過去的叫貨紀錄）帶出這個品項的預設牌價與折數：牌價取同廠商最近一筆（沒有就取任一廠商最近一筆），折數優先用該廠商最近用的
+const listDefaultsFor = (pool, itemName, supplier) => {
+  const sorted = pool.slice().sort((x, y) => ((x.date || "") < (y.date || "") ? 1 : -1));
+  const named = sorted.filter((o) => o.itemName === itemName).map((o) => ({ o, info: listInfoOf(o) })).filter((x) => x.info);
+  if (!named.length) return null;
+  const same = named.find((x) => x.o.supplier === supplier);
+  const supHit = supplier ? sorted.map((o) => ({ o, info: o.supplier === supplier ? listInfoOf(o) : null })).find((x) => x.info) : null;
+  return { listPrice: (same || named[0]).info.listPrice, discount: same ? same.info.discount : supHit ? supHit.info.discount : named[0].info.discount };
 };
 const withListNote = (note, listPrice, discount) => {
   const cleaned = (note || "").replace(/牌價\s*[\d.]+\s*折數\s*[\d.]+[，,;；\s]*/g, "").trim();
@@ -2995,19 +3013,23 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
 }
 
 // 管路類專用：用牌價 × 折數算單價（新增與編輯共用）
-function ListPriceField({ form, setForm, orders, supplier }) {
+function ListPriceField({ form, setForm, orders, supplier, itemName }) {
   const unit = calcListUnit(form.listPrice, form.discount);
   const lastDiscount = useMemo(() => {
-    const hit = orders.find((o) => (!supplier || o.supplier === supplier) && (o.discount || parseListNote(o.note)));
-    return hit ? String(hit.discount || parseListNote(hit.note).discount) : "";
+    const hit = orders.find((o) => (!supplier || o.supplier === supplier) && listInfoOf(o));
+    return hit ? listInfoOf(hit).discount : "";
   }, [orders, supplier]);
+  const itemDefaults = useMemo(() => (itemName ? listDefaultsFor(orders, itemName, supplier) : null), [orders, itemName, supplier]);
   const sugg = [...new Set([lastDiscount, "156", "158", "100"].filter(Boolean))];
   return (
     <Field label="牌價 × 折數算單價（管路類）" wide>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minHeight: 40 }}>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
           <input type="checkbox" checked={!!form.useList} style={{ width: 16, height: 16 }}
-            onChange={(e) => setForm({ ...form, useList: e.target.checked, ...(e.target.checked && !form.discount && lastDiscount ? { discount: lastDiscount } : {}) })} />
+            onChange={(e) => setForm({ ...form, useList: e.target.checked, ...(e.target.checked ? {
+              ...(!form.listPrice && itemDefaults ? { listPrice: itemDefaults.listPrice } : {}),
+              ...(!form.discount && (itemDefaults?.discount || lastDiscount) ? { discount: itemDefaults?.discount || lastDiscount } : {}),
+            } : {}) })} />
           用牌價 × 折數計算單價
         </label>
         {form.useList && (
@@ -3046,7 +3068,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
       quantity: o.quantity, unit: o.unit || "", unitPrice: o.unitPrice, note: o.note || "",
       hasInvoice: !!o.hasInvoice, applyTax: !!o.applyTax, taxRate: o.taxRate ?? 5,
       ...(() => {
-        const lp = o.listPrice && o.discount ? { listPrice: String(o.listPrice), discount: String(o.discount) } : parseListNote(o.note);
+        const lp = listInfoOf(o);
         return lp ? { useList: true, ...lp } : { useList: false, listPrice: "", discount: "" };
       })(),
     });
@@ -3122,27 +3144,34 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
   }, [orderForm.itemName, orderForm.supplier, vendorStats, sortedSuppliers]);
   const [addVendorOpen, setAddVendorOpen] = useState(false);
   const [vendorDraft, setVendorDraft] = useState("");
+  // 管路類：選了品項／廠商，就依單據（過去叫貨紀錄）帶入預設的牌價與折數，並開啟牌價×折數
+  const withListDefaults = (form, itemName, supplier) => {
+    if (!isPipeCategory(catById[form.categoryId])) return form;
+    const d = listDefaultsFor(allOrders || orders, itemName, supplier);
+    return d ? { ...form, useList: true, listPrice: d.listPrice, discount: d.discount } : form;
+  };
   const handlePick = (e) => {
     const val = e.target.value;
     if (val === "__manage__") { setManageOpen(true); return; }
     const m = materialItems.find((x) => x.name === val);
     const vs = vendorStatsOf(val);
     const keep = orderForm.supplier && vs[orderForm.supplier] ? vs[orderForm.supplier] : null;
-    setOrderForm({
+    const nextForm = {
       ...orderForm,
       itemName: val,
       supplier: keep ? orderForm.supplier : "",
       unit: m && m.unit ? m.unit : orderForm.unit,
       unitPrice: keep ? keep.price : (m && m.defaultPrice !== "" && m.defaultPrice != null ? m.defaultPrice : orderForm.unitPrice),
       categoryId: m && m.categoryId ? m.categoryId : orderForm.categoryId,
-    });
+    };
+    setOrderForm(withListDefaults(nextForm, val, nextForm.supplier));
   };
   const handlePickSupplier = (e) => {
     const val = e.target.value;
     if (val === "__manage__") { setSupplierManageOpen(true); return; }
     if (val === "__add__") { setAddVendorOpen(true); return; }
     const st = vendorStats[val];
-    setOrderForm({ ...orderForm, supplier: val, ...(st ? { unitPrice: st.price, unit: orderForm.unit || st.unit } : {}) });
+    setOrderForm(withListDefaults({ ...orderForm, supplier: val, ...(st ? { unitPrice: st.price, unit: orderForm.unit || st.unit } : {}) }, orderForm.itemName, val));
   };
   // 新增／加入廠商：已存在的廠商直接選用；沒有的先新增到廠商清單，再選用
   const addVendorForItem = () => {
@@ -3150,7 +3179,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
     if (!nm) { showToast("請輸入廠商名稱"); return; }
     if (!suppliers.some((x) => x.name === nm)) addSupplier(nm);
     const st = vendorStats[nm];
-    setOrderForm({ ...orderForm, supplier: nm, ...(st ? { unitPrice: st.price, unit: orderForm.unit || st.unit } : {}) });
+    setOrderForm(withListDefaults({ ...orderForm, supplier: nm, ...(st ? { unitPrice: st.price, unit: orderForm.unit || st.unit } : {}) }, orderForm.itemName, nm));
     setVendorDraft("");
     setAddVendorOpen(false);
   };
@@ -3328,7 +3357,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
             <input type="number" step="any" min="0" value={formListOn ? formUnit : orderForm.unitPrice} readOnly={formListOn}
               title={formListOn ? "已用牌價 × 折數自動計算" : undefined} onChange={(e) => setOrderForm({ ...orderForm, unitPrice: e.target.value })} />
           </Field>
-          {formIsPipe && <ListPriceField form={orderForm} setForm={setOrderForm} orders={allOrders || orders} supplier={orderForm.supplier} />}
+          {formIsPipe && <ListPriceField form={orderForm} setForm={setOrderForm} orders={allOrders || orders} supplier={orderForm.supplier} itemName={orderForm.itemName} />}
           <Field label="小計">
             <div className="wel-amount-preview">{fmtMoney(amount)}</div>
           </Field>
@@ -3490,7 +3519,7 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                                       readOnly={isPipeCategory(catById[editDraft.categoryId]) && editDraft.useList && calcListUnit(editDraft.listPrice, editDraft.discount) != null}
                                       onChange={(e) => setEditDraft({ ...editDraft, unitPrice: e.target.value })} />
                                   </Field>
-                                  {isPipeCategory(catById[editDraft.categoryId]) && <ListPriceField form={editDraft} setForm={setEditDraft} orders={allOrders || orders} supplier={editDraft.supplier} />}
+                                  {isPipeCategory(catById[editDraft.categoryId]) && <ListPriceField form={editDraft} setForm={setEditDraft} orders={allOrders || orders} supplier={editDraft.supplier} itemName={editDraft.itemName} />}
                                   <Field label="小計">
                                     <div className="wel-amount-preview">{fmtMoney((Number(editDraft.quantity) || 0) * (Number(effectiveUnitPrice(editDraft, isPipeCategory(catById[editDraft.categoryId]))) || 0))}</div>
                                   </Field>
