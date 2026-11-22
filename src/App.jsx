@@ -9,7 +9,7 @@ import {
   Gauge, LayoutDashboard, ClipboardList, Boxes, Tags, Loader2, X, Droplets,
   Users, CalendarRange, HardHat, Building2, Layers, Handshake, Banknote,
   ChevronDown, ChevronRight, Copy, ListChecks, Wallet, ListOrdered, UserCheck,
-  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus, ChevronUp, Workflow, Calculator, Scale
+  MessageSquare, CheckCircle2, Circle, FileSpreadsheet, FileText, PiggyBank, Hammer, Receipt, Pencil, NotebookPen, Paperclip, Upload, Download, Camera, ScanLine, ImagePlus, ChevronUp, Workflow, Calculator, Scale, BookOpen
 } from "lucide-react";
 import { storageGet, storageSet, storageGetAll, fileStore, fileLoad, fileRemove } from "./storage";
 import { parseReceiptText, parseItemListText, suggestNames } from "./receiptParse";
@@ -289,6 +289,9 @@ export default function WaterElectricLedger() {
   const [defects, setDefects] = useState([]);
   const defectsRef = useRef(defects);
   defectsRef.current = defects;
+  const [acctDocs, setAcctDocs] = useState([]);
+  const acctDocsRef = useRef(acctDocs);
+  acctDocsRef.current = acctDocs;
   const [clientClaims, setClientClaims] = useState([]);
   const clientClaimsRef = useRef(clientClaims);
   clientClaimsRef.current = clientClaims;
@@ -326,6 +329,7 @@ export default function WaterElectricLedger() {
       const oe = data.otherexpenses ?? [];
       const ccl = data.clientclaims ?? [];
       const dfx = data.defects ?? [];
+      const adx = data.acctdocs ?? [];
       const siteList = st && st.length ? st : [DEFAULT_SITE];
       const fallbackSiteId = siteList[0].id;
       // migrate legacy records created before 案場 (site) existed
@@ -370,6 +374,7 @@ export default function WaterElectricLedger() {
       setOtherExpenses(oe);
       setClientClaims(ccl);
       setDefects(dfx);
+      setAcctDocs(adx);
       setLoading(false);
       if (!ok) {
         // The read itself failed (network/auth hiccup) — do NOT run any of the
@@ -495,6 +500,11 @@ export default function WaterElectricLedger() {
   const persistDefects = useCallback(async (list) => {
     setSaving(true);
     await storageSet("defects", list);
+    setSaving(false);
+  }, []);
+  const persistAcctDocs = useCallback(async (list) => {
+    setSaving(true);
+    await storageSet("acctdocs", list);
     setSaving(false);
   }, []);
   const persistClientClaims = useCallback(async (list) => {
@@ -1366,6 +1376,62 @@ export default function WaterElectricLedger() {
     fileRemove(file.id, file.chunks);
   };
 
+  // ---- 會計師帳：會計帳／401 報表（全公司共用，不分案場；檔案同樣分段存 Firestore，只在紀錄上留檔案資訊） ----
+  const addAcctDoc = async ({ kind, period, year, title, filedDate, tax, note, files }) => {
+    const list = acctDocsRef.current;
+    if (kind === "vat401") {
+      if (!year || !period) { showToast("請選擇年度和期別"); return false; }
+      if (list.some((d) => d.kind === "vat401" && d.year === String(year) && d.period === period)) { showToast(`${year} 年 ${period} 的 401 報表已經有了，請直接在那一筆上傳檔案`); return false; }
+    } else if (!period) { showToast("請選擇帳的年月"); return false; }
+    const metas = [];
+    for (const f of files || []) {
+      const meta = await uploadFileMeta(f);
+      if (!meta) { metas.forEach((m) => fileRemove(m.id, m.chunks)); return false; }
+      metas.push(meta);
+    }
+    const rec = kind === "vat401"
+      ? { id: uid(), kind, year: String(year), period, filedDate: filedDate || "", tax: tax === "" || tax == null ? null : Math.round(Number(tax) || 0), note: (note || "").trim(), files: metas }
+      : { id: uid(), kind: "ledger", period, title: (title || "").trim(), note: (note || "").trim(), files: metas };
+    const next = [...list, rec];
+    setAcctDocs(next);
+    persistAcctDocs(next);
+    showToast(`已儲存（${metas.length} 個檔案）`);
+    return true;
+  };
+  const updateAcctDoc = (id, patch) => {
+    const next = acctDocsRef.current.map((d) => (d.id === id ? { ...d, ...patch } : d));
+    setAcctDocs(next);
+    persistAcctDocs(next);
+  };
+  const deleteAcctDoc = (id) => {
+    const rec = acctDocsRef.current.find((d) => d.id === id);
+    if (!rec || !window.confirm(`確定要刪除這筆${rec.kind === "vat401" ? "401 報表" : "會計帳"}（含 ${rec.files?.length || 0} 個檔案）嗎？刪除後無法復原。`)) return;
+    (rec.files || []).forEach((f) => fileRemove(f.id, f.chunks));
+    const next = acctDocsRef.current.filter((d) => d.id !== id);
+    setAcctDocs(next);
+    persistAcctDocs(next);
+  };
+  const addAcctFiles = async (id, files) => {
+    const metas = [];
+    for (const f of files) {
+      const meta = await uploadFileMeta(f);
+      if (!meta) { metas.forEach((m) => fileRemove(m.id, m.chunks)); return false; }
+      metas.push(meta);
+    }
+    const next = acctDocsRef.current.map((d) => (d.id === id ? { ...d, files: [...(d.files || []), ...metas] } : d));
+    setAcctDocs(next);
+    persistAcctDocs(next);
+    showToast(`已上傳 ${metas.length} 個檔案`);
+    return true;
+  };
+  const removeAcctFile = (id, file) => {
+    if (!window.confirm(`確定要刪除檔案「${file.name}」嗎？刪除後無法復原。`)) return;
+    const next = acctDocsRef.current.map((d) => (d.id === id ? { ...d, files: (d.files || []).filter((f) => f.id !== file.id) } : d));
+    setAcctDocs(next);
+    persistAcctDocs(next);
+    fileRemove(file.id, file.chunks);
+  };
+
   // ---- 估價單（僅供對照，不計入任何總結算） ----
   const addEstimateLines = (rows) => {
     if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增估價項目"); return; }
@@ -2188,6 +2254,7 @@ export default function WaterElectricLedger() {
             <NavBtn icon={<Wallet size={16} />} label="甲方收款" active={tab === "client"} onClick={() => setTab("client")} />
             <NavBtn icon={<PiggyBank size={16} />} label="投入成本" active={tab === "capital"} onClick={() => setTab("capital")} />
             <NavBtn icon={<Hammer size={16} />} label="固定資產" active={tab === "assets"} onClick={() => setTab("assets")} />
+            <NavBtn icon={<BookOpen size={16} />} label="會計師帳" active={tab === "accountant"} onClick={() => setTab("accountant")} />
             <NavBtn icon={<Receipt size={16} />} label="其他支出" active={tab === "otherexpenses"} onClick={() => setTab("otherexpenses")} />
             <NavBtn icon={<LayoutDashboard size={16} />} label="儀表板" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
           </nav>
@@ -2517,6 +2584,18 @@ export default function WaterElectricLedger() {
             />
           )}
           {tab === "workflow" && <WorkflowTab workflow={workflow} saveWorkflow={saveWorkflow} showToast={showToast} />}
+          {tab === "accountant" && (
+            <AccountantTab
+              docs={acctDocs}
+              addDoc={addAcctDoc}
+              updateDoc={updateAcctDoc}
+              deleteDoc={deleteAcctDoc}
+              addFiles={addAcctFiles}
+              removeFile={removeAcctFile}
+              openFile={openContractFile}
+              showToast={showToast}
+            />
+          )}
           {tab === "defects" && (
             <DefectsTab
               defects={siteDefects}
@@ -8047,6 +8126,207 @@ function BlurInput({ value, placeholder, onSave, disabled }) {
       onChange={(e) => setV(e.target.value)} onBlur={commit}
       onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
     />
+  );
+}
+
+const VAT_PERIODS = ["1-2月", "3-4月", "5-6月", "7-8月", "9-10月", "11-12月"];
+
+function AcctFileRow({ doc, addFiles, removeFile, openFile }) {
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+  const files = doc.files || [];
+  const onPick = async (e) => {
+    const list = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!list.length) return;
+    setBusy(true);
+    await addFiles(doc.id, list);
+    setBusy(false);
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+      {files.map((f) => (
+        <div key={f.id} className="wel-attendance-item">
+          <button type="button" className="wel-btn-ghost" style={{ padding: "2px 8px" }} onClick={() => openFile(f)}><Download size={12} /> 開啟</button>
+          <span style={{ flex: 1, wordBreak: "break-all" }}>{f.name}</span>
+          <span className="mono muted">{fmtSize(f.size)}</span>
+          <span className="mono muted">{f.uploadedAt}</span>
+          <button className="wel-icon-btn" onClick={() => removeFile(doc.id, f)}><Trash2 size={13} /></button>
+        </div>
+      ))}
+      <div>
+        <input ref={inputRef} type="file" accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx,.csv" multiple style={{ display: "none" }} onChange={onPick} />
+        <button type="button" className="wel-btn-ghost" disabled={busy} onClick={() => inputRef.current && inputRef.current.click()}>
+          {busy ? "上傳中…" : <><Upload size={12} /> 補傳檔案</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFile, openFile, showToast }) {
+  const thisYear = String(new Date().getFullYear());
+  const [sub, setSub] = useState("ledger"); // ledger | vat401
+  const emptyForm = () => ({ period: localToday().slice(0, 7), year: thisYear, vatPeriod: "", title: "", filedDate: "", tax: "", note: "" });
+  const [form, setForm] = useState(emptyForm);
+  const [picked, setPicked] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [openIds, setOpenIds] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const pickRef = useRef(null);
+
+  const ledgers = useMemo(() => docs.filter((d) => d.kind === "ledger").sort((a, b) => (a.period < b.period ? 1 : -1)), [docs]);
+  const vats = useMemo(() => docs.filter((d) => d.kind === "vat401").sort((a, b) => (a.year !== b.year ? (a.year < b.year ? 1 : -1) : VAT_PERIODS.indexOf(b.period) - VAT_PERIODS.indexOf(a.period))), [docs]);
+  const list = sub === "vat401" ? vats : ledgers;
+
+  const onPick = (e) => {
+    const l = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (l.length) setPicked((prev) => [...prev, ...l]);
+  };
+  const submit = async () => {
+    setBusy(true);
+    const ok = sub === "vat401"
+      ? await addDoc({ kind: "vat401", year: form.year, period: form.vatPeriod, filedDate: form.filedDate, tax: form.tax, note: form.note, files: picked })
+      : await addDoc({ kind: "ledger", period: form.period, title: form.title, note: form.note, files: picked });
+    setBusy(false);
+    if (ok) { setPicked([]); setForm(emptyForm()); }
+  };
+  const startEdit = (d) => {
+    setEditingId(d.id);
+    setDraft(d.kind === "vat401"
+      ? { year: d.year, period: d.period, filedDate: d.filedDate || "", tax: d.tax == null ? "" : String(d.tax), note: d.note || "" }
+      : { period: d.period, title: d.title || "", note: d.note || "" });
+  };
+  const saveEdit = (d) => {
+    if (d.kind === "vat401") {
+      if (!draft.year || !draft.period) { showToast("請選擇年度和期別"); return; }
+      if (docs.some((x) => x.id !== d.id && x.kind === "vat401" && x.year === String(draft.year) && x.period === draft.period)) { showToast("這一期已經有另一筆 401 報表了"); return; }
+      updateDoc(d.id, { year: String(draft.year), period: draft.period, filedDate: draft.filedDate, tax: draft.tax === "" ? null : Math.round(Number(draft.tax) || 0), note: draft.note.trim() });
+    } else {
+      if (!draft.period) { showToast("請選擇帳的年月"); return; }
+      updateDoc(d.id, { period: draft.period, title: draft.title.trim(), note: draft.note.trim() });
+    }
+    setEditingId(null);
+    setDraft(null);
+  };
+  const heading = (d) => d.kind === "vat401" ? `${d.year} 年 ${d.period} 401 報表` : `${d.period} 會計帳${d.title ? " · " + d.title : ""}`;
+
+  return (
+    <div className="wel-page">
+      <div className="wel-page-head">
+        <div>
+          <div className="wel-eyebrow">會計師 · ACCOUNTANT</div>
+          <h1 className="wel-h1">會計師帳</h1>
+        </div>
+      </div>
+
+      <div className="wel-card" style={{ padding: 10 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className={sub === "ledger" ? "wel-btn-primary" : "wel-btn-ghost"} onClick={() => setSub("ledger")}><BookOpen size={14} /> 會計帳（{ledgers.length}）</button>
+          <button type="button" className={sub === "vat401" ? "wel-btn-primary" : "wel-btn-ghost"} onClick={() => setSub("vat401")}><FileText size={14} /> 401 報表（{vats.length}）</button>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>這裡是全公司共用的，不分案場；放會計師給的帳和營業稅 401 申報書（可傳 PDF、照片、Excel、Word）。</div>
+      </div>
+
+      <div className="wel-card wel-form">
+        <div className="wel-card-title"><Plus size={14} /> {sub === "vat401" ? "新增 401 報表" : "新增會計帳"}</div>
+        <div className="wel-form-grid">
+          {sub === "vat401" ? (
+            <>
+              <Field label="年度"><input type="number" min="2000" max="2100" value={form.year} onChange={(e) => setForm({ ...form, year: e.target.value })} /></Field>
+              <Field label="期別">
+                <select value={form.vatPeriod} onChange={(e) => setForm({ ...form, vatPeriod: e.target.value })}>
+                  <option value="">選擇期別</option>
+                  {VAT_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </Field>
+              <Field label="申報日期（選填）"><input type="date" value={form.filedDate} onChange={(e) => setForm({ ...form, filedDate: e.target.value })} /></Field>
+              <Field label="應納(＋)／應退(－)稅額（選填）"><input type="number" placeholder="例：12000 或 -3500" value={form.tax} onChange={(e) => setForm({ ...form, tax: e.target.value })} /></Field>
+            </>
+          ) : (
+            <>
+              <Field label="帳的年月"><input type="month" value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} /></Field>
+              <Field label="名稱（選填）" wide><input placeholder="例：損益表、總分類帳、試算表" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
+            </>
+          )}
+          <Field label="備註（選填）" wide><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
+        </div>
+        <input ref={pickRef} type="file" accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx,.csv" multiple style={{ display: "none" }} onChange={onPick} />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <button type="button" className="wel-btn-ghost" onClick={() => pickRef.current && pickRef.current.click()}><Upload size={14} /> 選擇檔案（可多個，單檔 5 MB 內）</button>
+        </div>
+        {picked.length > 0 && (
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+            {picked.map((f, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ wordBreak: "break-all" }}>{f.name}</span><span className="mono">{fmtSize(f.size)}</span>
+                <button type="button" className="wel-icon-btn" onClick={() => setPicked((prev) => prev.filter((_, k) => k !== i))}><X size={12} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button type="button" className="wel-btn-primary" disabled={busy} onClick={submit}>{busy ? "上傳中…" : <><Plus size={15} /> 儲存</>}</button>
+      </div>
+
+      <div className="wel-discussion-list">
+        {list.length === 0 && <div className="wel-card"><Empty text={sub === "vat401" ? "尚未新增任何 401 報表" : "尚未新增任何會計帳"} /></div>}
+        {list.map((d) => {
+          const isOpen = openIds[d.id] ?? false;
+          return (
+            <div key={d.id} className="wel-discussion-card">
+              {editingId === d.id ? (
+                <div className="wel-timeline-wrap" style={{ padding: 0 }}>
+                  <div className="wel-form-grid">
+                    {d.kind === "vat401" ? (
+                      <>
+                        <Field label="年度"><input type="number" value={draft.year} onChange={(e) => setDraft({ ...draft, year: e.target.value })} /></Field>
+                        <Field label="期別">
+                          <select value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })}>
+                            {VAT_PERIODS.map((p) => <option key={p} value={p}>{p}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="申報日期"><input type="date" value={draft.filedDate} onChange={(e) => setDraft({ ...draft, filedDate: e.target.value })} /></Field>
+                        <Field label="應納(＋)／應退(－)稅額"><input type="number" value={draft.tax} onChange={(e) => setDraft({ ...draft, tax: e.target.value })} /></Field>
+                      </>
+                    ) : (
+                      <>
+                        <Field label="帳的年月"><input type="month" value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })} /></Field>
+                        <Field label="名稱" wide><input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></Field>
+                      </>
+                    )}
+                    <Field label="備註" wide><input value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} /></Field>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" className="wel-btn-primary" onClick={() => saveEdit(d)}>儲存修改</button>
+                    <button type="button" className="wel-btn-ghost" onClick={() => { setEditingId(null); setDraft(null); }}>取消</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="wel-discussion-head wel-row-clickable" onClick={() => setOpenIds((p) => ({ ...p, [d.id]: !isOpen }))}>
+                    {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    <span className="wel-discussion-topic">{heading(d)}</span>
+                    {d.kind === "vat401" && (
+                      <span className="wel-chip" style={{ color: d.filedDate ? "var(--green)" : "var(--amber)" }}>{d.filedDate ? `已申報 ${d.filedDate}` : "未填申報日"}</span>
+                    )}
+                    {d.kind === "vat401" && d.tax != null && (
+                      <span className="mono" style={{ fontSize: 12 }}>{d.tax >= 0 ? "應納 " : "應退 "}{fmtMoney(Math.abs(d.tax))}</span>
+                    )}
+                    <span className="muted mono" style={{ fontSize: 11.5 }}>{(d.files || []).length} 個檔案</span>
+                    <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); startEdit(d); }}><Pencil size={14} /></button>
+                    <button className="wel-icon-btn" onClick={(e) => { e.stopPropagation(); deleteDoc(d.id); }}><Trash2 size={14} /></button>
+                  </div>
+                  {d.note && <div className="wel-discussion-note muted">{d.note}</div>}
+                  {isOpen && <AcctFileRow doc={d} addFiles={addFiles} removeFile={removeFile} openFile={openFile} />}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
