@@ -81,7 +81,8 @@ const listDefaultsFor = (pool, itemName, supplier) => {
   if (!named.length) return null;
   const same = named.find((x) => x.o.supplier === supplier);
   const supHit = supplier ? sorted.map((o) => ({ o, info: o.supplier === supplier ? listInfoOf(o) : null })).find((x) => x.info) : null;
-  return { listPrice: (same || named[0]).info.listPrice, discount: same ? same.info.discount : supHit ? supHit.info.discount : named[0].info.discount };
+  // 折數看廠商目前給的（該廠商最近一筆有折數的紀錄，例如宏申揚現在都是 158），不看這個品項很久以前的舊折數
+  return { listPrice: (same || named[0]).info.listPrice, discount: supHit ? supHit.info.discount : same ? same.info.discount : named[0].info.discount };
 };
 const withListNote = (note, listPrice, discount) => {
   const cleaned = (note || "").replace(/牌價\s*[\d.]+\s*折數\s*[\d.]+[，,;；\s]*/g, "").trim();
