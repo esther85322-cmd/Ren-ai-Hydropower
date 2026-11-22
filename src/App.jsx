@@ -1377,12 +1377,12 @@ export default function WaterElectricLedger() {
   };
 
   // ---- 會計師帳：會計帳／401 報表（全公司共用，不分案場；檔案同樣分段存 Firestore，只在紀錄上留檔案資訊） ----
-  const addAcctDoc = async ({ kind, period, year, title, filedDate, tax, note, files }) => {
+  const addAcctDoc = async ({ kind, period, year, title, filedDate, tax, direction, note, files }) => {
     const list = acctDocsRef.current;
     if (kind === "vat401") {
       if (!year || !period) { showToast("請選擇年度和期別"); return false; }
       if (list.some((d) => d.kind === "vat401" && d.year === String(year) && d.period === period)) { showToast(`${year} 年 ${period} 的 401 報表已經有了，請直接在那一筆上傳檔案`); return false; }
-    } else if (!period) { showToast("請選擇帳的年月"); return false; }
+    } else if (!period) { showToast(kind === "einvoice" ? "請選擇電子發票的年月" : "請選擇帳的年月"); return false; }
     const metas = [];
     for (const f of files || []) {
       const meta = await uploadFileMeta(f);
@@ -1391,7 +1391,9 @@ export default function WaterElectricLedger() {
     }
     const rec = kind === "vat401"
       ? { id: uid(), kind, year: String(year), period, filedDate: filedDate || "", tax: tax === "" || tax == null ? null : Math.round(Number(tax) || 0), note: (note || "").trim(), files: metas }
-      : { id: uid(), kind: "ledger", period, title: (title || "").trim(), note: (note || "").trim(), files: metas };
+      : kind === "einvoice"
+        ? { id: uid(), kind, period, direction: direction || "", title: (title || "").trim(), note: (note || "").trim(), files: metas }
+        : { id: uid(), kind: "ledger", period, title: (title || "").trim(), note: (note || "").trim(), files: metas };
     const next = [...list, rec];
     setAcctDocs(next);
     persistAcctDocs(next);
@@ -1405,7 +1407,7 @@ export default function WaterElectricLedger() {
   };
   const deleteAcctDoc = (id) => {
     const rec = acctDocsRef.current.find((d) => d.id === id);
-    if (!rec || !window.confirm(`確定要刪除這筆${rec.kind === "vat401" ? "401 報表" : "會計帳"}（含 ${rec.files?.length || 0} 個檔案）嗎？刪除後無法復原。`)) return;
+    if (!rec || !window.confirm(`確定要刪除這筆${rec.kind === "vat401" ? "401 報表" : rec.kind === "einvoice" ? "電子發票" : "會計帳"}（含 ${rec.files?.length || 0} 個檔案）嗎？刪除後無法復原。`)) return;
     (rec.files || []).forEach((f) => fileRemove(f.id, f.chunks));
     const next = acctDocsRef.current.filter((d) => d.id !== id);
     setAcctDocs(next);
@@ -8166,8 +8168,8 @@ function AcctFileRow({ doc, addFiles, removeFile, openFile }) {
 
 function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFile, openFile, showToast }) {
   const thisYear = String(new Date().getFullYear());
-  const [sub, setSub] = useState("ledger"); // ledger | vat401
-  const emptyForm = () => ({ period: localToday().slice(0, 7), year: thisYear, vatPeriod: "", title: "", filedDate: "", tax: "", note: "" });
+  const [sub, setSub] = useState("vat401"); // vat401 | einvoice | ledger
+  const emptyForm = () => ({ period: localToday().slice(0, 7), year: thisYear, vatPeriod: "", title: "", filedDate: "", tax: "", direction: "", note: "" });
   const [form, setForm] = useState(emptyForm);
   const [picked, setPicked] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -8178,7 +8180,8 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
 
   const ledgers = useMemo(() => docs.filter((d) => d.kind === "ledger").sort((a, b) => (a.period < b.period ? 1 : -1)), [docs]);
   const vats = useMemo(() => docs.filter((d) => d.kind === "vat401").sort((a, b) => (a.year !== b.year ? (a.year < b.year ? 1 : -1) : VAT_PERIODS.indexOf(b.period) - VAT_PERIODS.indexOf(a.period))), [docs]);
-  const list = sub === "vat401" ? vats : ledgers;
+  const einvoices = useMemo(() => docs.filter((d) => d.kind === "einvoice").sort((a, b) => (a.period < b.period ? 1 : -1)), [docs]);
+  const list = sub === "vat401" ? vats : sub === "einvoice" ? einvoices : ledgers;
 
   const onPick = (e) => {
     const l = Array.from(e.target.files || []);
@@ -8189,7 +8192,7 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
     setBusy(true);
     const ok = sub === "vat401"
       ? await addDoc({ kind: "vat401", year: form.year, period: form.vatPeriod, filedDate: form.filedDate, tax: form.tax, note: form.note, files: picked })
-      : await addDoc({ kind: "ledger", period: form.period, title: form.title, note: form.note, files: picked });
+      : await addDoc({ kind: sub, period: form.period, title: form.title, direction: form.direction, note: form.note, files: picked });
     setBusy(false);
     if (ok) { setPicked([]); setForm(emptyForm()); }
   };
@@ -8197,7 +8200,7 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
     setEditingId(d.id);
     setDraft(d.kind === "vat401"
       ? { year: d.year, period: d.period, filedDate: d.filedDate || "", tax: d.tax == null ? "" : String(d.tax), note: d.note || "" }
-      : { period: d.period, title: d.title || "", note: d.note || "" });
+      : { period: d.period, title: d.title || "", direction: d.direction || "", note: d.note || "" });
   };
   const saveEdit = (d) => {
     if (d.kind === "vat401") {
@@ -8206,12 +8209,17 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
       updateDoc(d.id, { year: String(draft.year), period: draft.period, filedDate: draft.filedDate, tax: draft.tax === "" ? null : Math.round(Number(draft.tax) || 0), note: draft.note.trim() });
     } else {
       if (!draft.period) { showToast("請選擇帳的年月"); return; }
-      updateDoc(d.id, { period: draft.period, title: draft.title.trim(), note: draft.note.trim() });
+      updateDoc(d.id, d.kind === "einvoice"
+        ? { period: draft.period, title: draft.title.trim(), direction: draft.direction, note: draft.note.trim() }
+        : { period: draft.period, title: draft.title.trim(), note: draft.note.trim() });
     }
     setEditingId(null);
     setDraft(null);
   };
-  const heading = (d) => d.kind === "vat401" ? `${d.year} 年 ${d.period} 401 報表` : `${d.period} 會計帳${d.title ? " · " + d.title : ""}`;
+  const heading = (d) => d.kind === "vat401" ? `${d.year} 年 ${d.period} 401 報表`
+    : d.kind === "einvoice" ? `${d.period} 電子發票${d.direction ? "（" + d.direction + "）" : ""}${d.title ? " · " + d.title : ""}`
+    : `${d.period} 會計帳${d.title ? " · " + d.title : ""}`;
+  const subName = sub === "vat401" ? "401 報表" : sub === "einvoice" ? "電子發票" : "會計帳";
 
   return (
     <div className="wel-page">
@@ -8224,14 +8232,15 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
 
       <div className="wel-card" style={{ padding: 10 }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className={sub === "ledger" ? "wel-btn-primary" : "wel-btn-ghost"} onClick={() => setSub("ledger")}><BookOpen size={14} /> 會計帳（{ledgers.length}）</button>
           <button type="button" className={sub === "vat401" ? "wel-btn-primary" : "wel-btn-ghost"} onClick={() => setSub("vat401")}><FileText size={14} /> 401 報表（{vats.length}）</button>
+          <button type="button" className={sub === "einvoice" ? "wel-btn-primary" : "wel-btn-ghost"} onClick={() => setSub("einvoice")}><Receipt size={14} /> 電子發票（{einvoices.length}）</button>
+          <button type="button" className={sub === "ledger" ? "wel-btn-primary" : "wel-btn-ghost"} onClick={() => setSub("ledger")}><BookOpen size={14} /> 會計帳（{ledgers.length}）</button>
         </div>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>這裡是全公司共用的，不分案場；放會計師給的帳和營業稅 401 申報書（可傳 PDF、照片、Excel、Word）。</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>這裡是全公司共用的，不分案場；分三區：營業稅 401 申報書、電子發票、會計師給的帳（可傳 PDF、照片、Excel、Word）。</div>
       </div>
 
       <div className="wel-card wel-form">
-        <div className="wel-card-title"><Plus size={14} /> {sub === "vat401" ? "新增 401 報表" : "新增會計帳"}</div>
+        <div className="wel-card-title"><Plus size={14} /> 新增{subName}</div>
         <div className="wel-form-grid">
           {sub === "vat401" ? (
             <>
@@ -8247,8 +8256,15 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
             </>
           ) : (
             <>
-              <Field label="帳的年月"><input type="month" value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} /></Field>
-              <Field label="名稱（選填）" wide><input placeholder="例：損益表、總分類帳、試算表" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
+              <Field label={sub === "einvoice" ? "發票年月" : "帳的年月"}><input type="month" value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} /></Field>
+              {sub === "einvoice" && (
+                <Field label="進項／銷項（選填）">
+                  <select value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })}>
+                    <option value="">不分</option><option value="進項">進項</option><option value="銷項">銷項</option>
+                  </select>
+                </Field>
+              )}
+              <Field label="名稱（選填）" wide><input placeholder={sub === "einvoice" ? "例：電子發票彙整清單、載具明細" : "例：損益表、總分類帳、試算表"} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
             </>
           )}
           <Field label="備註（選填）" wide><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></Field>
@@ -8271,7 +8287,7 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
       </div>
 
       <div className="wel-discussion-list">
-        {list.length === 0 && <div className="wel-card"><Empty text={sub === "vat401" ? "尚未新增任何 401 報表" : "尚未新增任何會計帳"} /></div>}
+        {list.length === 0 && <div className="wel-card"><Empty text={`尚未新增任何${subName}`} /></div>}
         {list.map((d) => {
           const isOpen = openIds[d.id] ?? false;
           return (
@@ -8292,7 +8308,14 @@ function AccountantTab({ docs, addDoc, updateDoc, deleteDoc, addFiles, removeFil
                       </>
                     ) : (
                       <>
-                        <Field label="帳的年月"><input type="month" value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })} /></Field>
+                        <Field label="年月"><input type="month" value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })} /></Field>
+                        {d.kind === "einvoice" && (
+                          <Field label="進項／銷項">
+                            <select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value })}>
+                              <option value="">不分</option><option value="進項">進項</option><option value="銷項">銷項</option>
+                            </select>
+                          </Field>
+                        )}
                         <Field label="名稱" wide><input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></Field>
                       </>
                     )}
