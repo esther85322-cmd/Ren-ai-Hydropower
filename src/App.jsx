@@ -7429,6 +7429,16 @@ function ScheduleTab({ items, siteById, isAllSites, sites, setCurrentSiteId, add
 const logDays = (l) => Math.max(1, daysBetween(l.start, l.end) + 1);
 function StepTimeLogs({ logs, onChange }) {
   const [draft, setDraft] = useState({ start: localToday(), end: localToday(), note: "" });
+  const [editId, setEditId] = useState(null);
+  const [ed, setEd] = useState(null);
+  const startEd = (l) => { setEditId(l.id); setEd({ start: l.start, end: l.end, note: l.note || "" }); };
+  const setEdStart = (v) => setEd((d) => ({ ...d, start: v, end: d.end < v ? v : d.end }));
+  const setEdEnd = (v) => setEd((d) => ({ ...d, end: v < d.start ? d.start : v }));
+  const saveEd = () => {
+    onChange(logs.map((x) => (x.id === editId ? { ...x, start: ed.start, end: ed.end, note: ed.note.trim() } : x)));
+    setEditId(null);
+    setEd(null);
+  };
   const total = logs.reduce((s, l) => s + logDays(l), 0);
   const setStart = (v) => setDraft((d) => ({ ...d, start: v, end: d.end < v ? v : d.end }));
   const setEnd = (v) => setDraft((d) => ({ ...d, end: v < d.start ? d.start : v }));
@@ -7442,11 +7452,20 @@ function StepTimeLogs({ logs, onChange }) {
         <b>時間紀錄</b>
         <span className="muted"> · {logs.length > 0 ? `共 ${logs.length} 次，合計 ${total} 天，平均 ${(total / logs.length).toFixed(1)} 天` : "還沒有紀錄"}</span>
       </div>
-      {logs.slice().sort((a, b) => (a.start < b.start ? -1 : 1)).map((l) => (
+      {logs.slice().sort((a, b) => (a.start < b.start ? -1 : 1)).map((l) => editId === l.id && ed ? (
+        <div key={l.id} style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 6, padding: "6px 8px", border: "1px solid var(--teal)", borderRadius: 8 }}>
+          <label className="wel-mini-label">開始<DateWheel value={ed.start} onChange={setEdStart} /></label>
+          <label className="wel-mini-label">結束<DateWheel value={ed.end} onChange={setEdEnd} /></label>
+          <label className="wel-mini-label">備註<input style={{ width: 160 }} value={ed.note} onChange={(e) => setEd({ ...ed, note: e.target.value })} /></label>
+          <button type="button" className="wel-btn-primary" onClick={saveEd}>儲存</button>
+          <button type="button" className="wel-btn-ghost" onClick={() => { setEditId(null); setEd(null); }}>取消</button>
+        </div>
+      ) : (
         <div key={l.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, marginBottom: 3, flexWrap: "wrap" }}>
           <span className="mono">{l.start} ～ {l.end}</span>
           <b className="mono" style={{ color: "var(--amber)" }}>{logDays(l)} 天</b>
           {l.note && <span className="muted">{l.note}</span>}
+          <button type="button" className="wel-icon-btn" title="修改這筆時間紀錄" onClick={() => startEd(l)}><Pencil size={12} /></button>
           <button type="button" className="wel-icon-btn" title="刪除這筆時間紀錄" onClick={() => onChange(logs.filter((x) => x.id !== l.id))}><X size={12} /></button>
         </div>
       ))}
@@ -7634,7 +7653,7 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
                 <button className="wel-icon-btn" title="修改階段" onClick={() => startEditPhase(p)}><Pencil size={14} /></button>
                 <button className="wel-icon-btn" title="刪除階段" onClick={() => deletePhase(p)}><Trash2 size={14} /></button>
               </div>
-              {p.summary && <div className="muted" style={{ fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 8 }}>{p.summary}</div>}
+              {p.summary && <div className="muted" title="點一下修改" style={{ fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 8, cursor: "text" }} onClick={() => startEditPhase(p)}>{p.summary}</div>}
             </>
           )}
           {isOpen(p.id) && !editingPhaseForm(p) && (
@@ -7645,15 +7664,15 @@ function WorkflowTab({ workflow, saveWorkflow, showToast }) {
                     <>
                       <div className="wel-discussion-head">
                         <span className="mono" style={{ color: "var(--amber)" }}>{i + 1}-{j + 1}</span>
-                        <span className="wel-discussion-topic">{st.title}</span>
+                        <span className="wel-discussion-topic" title="點一下修改" style={{ cursor: "text" }} onClick={() => startEditStep(p, st)}>{st.title}</span>
                         <button className="wel-icon-btn" title="上移" disabled={j === 0} onClick={() => saveWorkflow(workflow.map((x) => (x.id === p.id ? { ...x, steps: move(x.steps, j, -1) } : x)))}><ChevronUp size={14} /></button>
                         <button className="wel-icon-btn" title="下移" disabled={j === p.steps.length - 1} onClick={() => saveWorkflow(workflow.map((x) => (x.id === p.id ? { ...x, steps: move(x.steps, j, 1) } : x)))}><ChevronDown size={14} /></button>
                         <button className="wel-icon-btn" title="修改步驟" onClick={() => startEditStep(p, st)}><Pencil size={14} /></button>
                         <button className="wel-icon-btn" title="刪除步驟" onClick={() => deleteStep(p, st)}><Trash2 size={14} /></button>
                       </div>
-                      {st.details && <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.7, marginTop: 6 }}>{st.details}</div>}
+                      {st.details && <div title="點一下修改" style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.7, marginTop: 6, cursor: "text" }} onClick={() => startEditStep(p, st)}>{st.details}</div>}
                       {st.tips && (
-                        <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.65, marginTop: 8, padding: "6px 10px", borderLeft: "3px solid var(--amber)", background: "rgba(232,163,61,0.08)", borderRadius: 4 }}>
+                        <div title="點一下修改" onClick={() => startEditStep(p, st)} style={{ cursor: "text", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.65, marginTop: 8, padding: "6px 10px", borderLeft: "3px solid var(--amber)", background: "rgba(232,163,61,0.08)", borderRadius: 4 }}>
                           <span className="muted" style={{ fontSize: 11.5 }}>經驗／注意事項</span>{"\n"}{st.tips}
                         </div>
                       )}
