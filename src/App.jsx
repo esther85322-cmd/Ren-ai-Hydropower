@@ -55,6 +55,24 @@ const warrantyOf = (p) => (p.releasesWarranty ? 0 : Number(p.warrantyAmount) || 
 const netAmt = (p) => (Number(p.amount) || 0) - warrantyOf(p);
 const receivedAmt = (p) => (isReceived(p) ? netAmt(p) : 0);
 
+// ---- 管路類：牌價 × 折數 ÷ 100 ＝ 單價（例：牌價 36.2、折數 158 → 57.196），備註自動寫「牌價36.2折數158」----
+const isPipeCategory = (c) => /管路/.test((c && c.name) || "");
+const calcListUnit = (listPrice, discount) => {
+  const a = Number(listPrice), b = Number(discount);
+  return a > 0 && b > 0 ? Math.round(((a * b) / 100) * 1000) / 1000 : null;
+};
+const parseListNote = (note) => {
+  const m = /牌價\s*([\d.]+)\s*折數\s*([\d.]+)/.exec(note || "");
+  return m ? { listPrice: m[1], discount: m[2] } : null;
+};
+const withListNote = (note, listPrice, discount) => {
+  const cleaned = (note || "").replace(/牌價\s*[\d.]+\s*折數\s*[\d.]+[，,;；\s]*/g, "").trim();
+  const tok = `牌價${listPrice}折數${discount}`;
+  return cleaned ? `${tok}，${cleaned}` : tok;
+};
+// 表單（新增／編輯共用）目前實際採用的單價：開了牌價×折數且兩格都填就用算的，否則用手填單價
+const effectiveUnitPrice = (f, isPipe) => (isPipe && f.useList ? calcListUnit(f.listPrice, f.discount) : null) ?? f.unitPrice;
+
 // ---- 請款單（期數）：每月 20 日前要送請款單，每月 17～20 日領票 ----
 const CLAIM_SEND_DEADLINE = 20, CHECK_PICKUP_FROM = 17, CHECK_PICKUP_TO = 20;
 const ymdStr = (y, m, d) => { const t = new Date(y, m - 1, d); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
@@ -840,7 +858,7 @@ export default function WaterElectricLedger() {
   }, [sites, orders, workLogs, workLogRate, payments, clientPayments, capitalContributions, otherExpenses, fixedAssets, dayKey]);
 
   // ---- forms ----
-  const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5 };
+  const emptyOrder = { date: todayStr(), categoryId: categories[0]?.id || "", itemName: "", supplier: "", quantity: "", unit: "", unitPrice: "", note: "", hasInvoice: true, applyTax: false, taxRate: 5, useList: false, listPrice: "", discount: "" };
   const [orderForm, setOrderForm] = useState(emptyOrder);
   const [newCatName, setNewCatName] = useState("");
   const [newWorker, setNewWorker] = useState({ name: "", dailyRate: "" });
@@ -883,16 +901,21 @@ export default function WaterElectricLedger() {
   const submitOrder = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (isAllSites) { showToast("請先在左側選擇一個案場，才能新增叫貨紀錄"); return; }
-    if (!orderForm.itemName.trim() || !orderForm.quantity || !orderForm.unitPrice) {
-      showToast("請填寫「品項名稱」「數量」「單價」後再新增叫貨紀錄");
+    const isPipe = isPipeCategory(categories.find((c) => c.id === orderForm.categoryId));
+    const listOn = isPipe && orderForm.useList && calcListUnit(orderForm.listPrice, orderForm.discount) != null;
+    const unitPrice = effectiveUnitPrice(orderForm, isPipe);
+    if (!orderForm.itemName.trim() || !orderForm.quantity || !unitPrice) {
+      showToast(isPipe && orderForm.useList ? "請填寫「品項名稱」「數量」「牌價」「折數」後再新增叫貨紀錄" : "請填寫「品項名稱」「數量」「單價」後再新增叫貨紀錄");
       return;
     }
-    const amount = Number(orderForm.quantity) * Number(orderForm.unitPrice);
-    const rec = { id: uid(), ...orderForm, siteId: currentSiteId, amount };
+    const amount = Number(orderForm.quantity) * Number(unitPrice);
+    const { useList, listPrice, discount, ...base } = orderForm;
+    const rec = { id: uid(), ...base, unitPrice, siteId: currentSiteId, amount };
+    if (listOn) { rec.listPrice = Number(listPrice); rec.discount = Number(discount); rec.note = withListNote(base.note, listPrice, discount); }
     const next = [rec, ...orders];
     setOrders(next);
     persistOrders(next);
-    setOrderForm({ ...emptyOrder, categoryId: orderForm.categoryId });
+    setOrderForm({ ...emptyOrder, categoryId: orderForm.categoryId, useList: orderForm.useList, discount: orderForm.discount });
   };
   const deleteOrder = (id) => {
     const next = orders.filter((o) => o.id !== id);
@@ -916,10 +939,15 @@ export default function WaterElectricLedger() {
       }
     }
   };
-  // 依叫貨紀錄校正品項類別：品項清單裡的類別，若沒有任何一筆叫貨用過，就改成叫貨實際用的類別（多種時取最常用、並列取最近）
+  // 品項類別 ⇄ 叫貨紀錄 同步歸類：
+  //  ① 品項清單裡的類別，若沒有任何一筆叫貨用過，就改成叫貨實際用的類別（多種時取最常用、並列取最近）；
+  //  ② 叫貨紀錄的類別是空白（或已被刪掉的類別）時，補上該品項的類別。
   const syncPlan = useMemo(() => {
+    const valid = new Set(categories.map((c) => c.id));
     const byName = {};
+    const blank = {};
     orders.forEach((o) => {
+      if (!valid.has(o.categoryId)) { blank[o.itemName] = (blank[o.itemName] || 0) + 1; return; }
       const r = byName[o.itemName] || (byName[o.itemName] = {});
       const c = r[o.categoryId] || (r[o.categoryId] = { n: 0, last: "" });
       c.n += 1;
@@ -928,20 +956,33 @@ export default function WaterElectricLedger() {
     const plan = [];
     materialItems.forEach((m) => {
       const r = byName[m.name];
-      if (!r || r[m.categoryId]) return;
-      const best = Object.entries(r).sort((a, b) => b[1].n - a[1].n || (a[1].last < b[1].last ? 1 : -1))[0][0];
-      plan.push({ id: m.id, name: m.name, from: m.categoryId, to: best });
+      let finalCat = m.categoryId;
+      if (r && !r[m.categoryId]) {
+        const best = Object.entries(r).sort((a, b) => b[1].n - a[1].n || (a[1].last < b[1].last ? 1 : -1))[0][0];
+        plan.push({ id: m.id, kind: "item", name: m.name, from: m.categoryId, to: best });
+        finalCat = best;
+      }
+      if (blank[m.name] && valid.has(finalCat)) plan.push({ id: m.id + "-o", kind: "orders", name: m.name, to: finalCat, n: blank[m.name] });
     });
     return plan;
-  }, [orders, materialItems]);
+  }, [orders, materialItems, categories]);
   const syncCategoriesFromOrders = () => {
     if (!syncPlan.length) { showToast("品項類別已和叫貨紀錄一致，不需要同步"); return; }
-    if (!window.confirm(`有 ${syncPlan.length} 個品項的類別和叫貨紀錄裡實際用的不一樣。\n\n要把這 ${syncPlan.length} 個品項的類別，改成叫貨紀錄裡用的類別嗎？（只會改「品項類別」的設定，不會動任何叫貨紀錄）`)) return;
-    const toById = Object.fromEntries(syncPlan.map((x) => [x.id, x.to]));
-    const nextItems = materialItems.map((m) => (toById[m.id] ? { ...m, categoryId: toById[m.id] } : m));
-    setMaterialItems(nextItems);
-    persistMaterialItems(nextItems);
-    showToast(`已同步 ${syncPlan.length} 個品項的類別`);
+    const nItems = syncPlan.filter((x) => x.kind === "item").length;
+    const nOrders = syncPlan.filter((x) => x.kind === "orders").reduce((a, x) => a + x.n, 0);
+    const lines = [nItems ? `・${nItems} 個品項的類別，改成叫貨紀錄裡實際用的類別` : "", nOrders ? `・${nOrders} 筆沒有類別的叫貨紀錄，補上品項清單裡的類別` : ""].filter(Boolean).join("\n");
+    if (!window.confirm(`要同步歸類嗎？\n\n${lines}\n\n（已經有正確類別的叫貨紀錄不會被改動）`)) return;
+    const itemTo = Object.fromEntries(syncPlan.filter((x) => x.kind === "item").map((x) => [x.id, x.to]));
+    const nextItems = materialItems.map((m) => (itemTo[m.id] ? { ...m, categoryId: itemTo[m.id] } : m));
+    if (nItems) { setMaterialItems(nextItems); persistMaterialItems(nextItems); }
+    if (nOrders) {
+      const orderTo = Object.fromEntries(syncPlan.filter((x) => x.kind === "orders").map((x) => [x.name, x.to]));
+      const valid = new Set(categories.map((c) => c.id));
+      const nextOrders = orders.map((o) => (!valid.has(o.categoryId) && orderTo[o.itemName] ? { ...o, categoryId: orderTo[o.itemName] } : o));
+      setOrders(nextOrders);
+      persistOrders(nextOrders);
+    }
+    showToast(`已同步歸類：${nItems} 個品項類別、${nOrders} 筆叫貨紀錄`);
   };
 
   const deleteUsage = (id) => {
@@ -1017,17 +1058,21 @@ export default function WaterElectricLedger() {
     const nextItems = materialItems.map((m) => (m.id === id ? { ...m, ...patch } : m));
     setMaterialItems(nextItems);
     persistMaterialItems(nextItems);
-    // renaming cascades to every past order/usage record so history stays consistent
-    if (patch.name && patch.name.trim() && patch.name.trim() !== item.name) {
-      const oldName = item.name;
-      const newName = patch.name.trim();
-      const nextOrders = orders.map((o) => (o.itemName === oldName ? { ...o, itemName: newName } : o));
-      const nextUsages = usages.map((u) => (u.itemName === oldName ? { ...u, itemName: newName } : u));
+    // 改名、或改類別：同名的過去叫貨／領用紀錄一起跟著改，叫貨和品項類別永遠是同一套歸類
+    const newName = patch.name && patch.name.trim() ? patch.name.trim() : item.name;
+    const renamed = newName !== item.name;
+    const recat = patch.categoryId !== undefined && patch.categoryId !== item.categoryId;
+    if (renamed || recat) {
+      const fix = (r) => (r.itemName === item.name ? { ...r, itemName: newName, ...(recat ? { categoryId: patch.categoryId } : {}) } : r);
+      const nextOrders = orders.map(fix);
+      const nextUsages = usages.map(fix);
       setOrders(nextOrders);
       setUsages(nextUsages);
       persistOrders(nextOrders);
       persistUsages(nextUsages);
-      showToast(`已將「${oldName}」更名為「${newName}」，並同步更新過去的叫貨／領用紀錄`);
+      const nO = orders.filter((o) => o.itemName === item.name).length;
+      if (renamed) showToast(`已將「${item.name}」更名為「${newName}」，並同步更新過去的叫貨／領用紀錄`);
+      else showToast(`已同步：品項「${item.name}」的類別改為「${catById[patch.categoryId]?.name || "未分類"}」，${nO} 筆叫貨紀錄一起改`);
     }
   };
   const removeMaterialItem = (id) => {
@@ -2949,6 +2994,46 @@ function Dashboard({ totalCost, thisMonthCost, meterDigits, categoryBreakdown, m
   );
 }
 
+// 管路類專用：用牌價 × 折數算單價（新增與編輯共用）
+function ListPriceField({ form, setForm, orders, supplier }) {
+  const unit = calcListUnit(form.listPrice, form.discount);
+  const lastDiscount = useMemo(() => {
+    const hit = orders.find((o) => (!supplier || o.supplier === supplier) && (o.discount || parseListNote(o.note)));
+    return hit ? String(hit.discount || parseListNote(hit.note).discount) : "";
+  }, [orders, supplier]);
+  const sugg = [...new Set([lastDiscount, "156", "158", "100"].filter(Boolean))];
+  return (
+    <Field label="牌價 × 折數算單價（管路類）" wide>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minHeight: 40 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text)", cursor: "pointer" }}>
+          <input type="checkbox" checked={!!form.useList} style={{ width: 16, height: 16 }}
+            onChange={(e) => setForm({ ...form, useList: e.target.checked, ...(e.target.checked && !form.discount && lastDiscount ? { discount: lastDiscount } : {}) })} />
+          用牌價 × 折數計算單價
+        </label>
+        {form.useList && (
+          <>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+              牌價
+              <input type="number" min="0" step="any" value={form.listPrice} style={{ width: 90, height: 32 }} onChange={(e) => setForm({ ...form, listPrice: e.target.value })} />
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5 }}>
+              折數
+              <input type="number" min="0" step="any" list="wel-discount-list" value={form.discount} style={{ width: 80, height: 32 }} onChange={(e) => setForm({ ...form, discount: e.target.value })} />
+              <datalist id="wel-discount-list">{sugg.map((v) => <option key={v} value={v} />)}</datalist>
+            </span>
+            <span style={{ display: "inline-flex", gap: 4 }}>
+              {sugg.map((v) => <button key={v} type="button" className="wel-chip-btn" onClick={() => setForm({ ...form, discount: v })}>{v}</button>)}
+            </span>
+            <span className="muted mono" style={{ fontSize: 12.5 }}>
+              {unit != null ? `單價 ＝ ${form.listPrice} × ${form.discount} ÷ 100 ＝ ${unit}` : "填牌價與折數，單價自動算（折數 158 ＝ ×1.58）"}
+            </span>
+          </>
+        )}
+      </div>
+    </Field>
+  );
+}
+
 function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderForm, submitOrder, deleteOrder, updateOrder, isAllSites, sites, setCurrentSiteId, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, suppliers, addSupplier, updateSupplier, removeSupplier, showToast, confirmScannedOrders, allOrders }) {
   const [scanOpen, setScanOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -2960,19 +3045,34 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
       date: o.date, categoryId: o.categoryId, itemName: o.itemName, supplier: o.supplier || "",
       quantity: o.quantity, unit: o.unit || "", unitPrice: o.unitPrice, note: o.note || "",
       hasInvoice: !!o.hasInvoice, applyTax: !!o.applyTax, taxRate: o.taxRate ?? 5,
+      ...(() => {
+        const lp = o.listPrice && o.discount ? { listPrice: String(o.listPrice), discount: String(o.discount) } : parseListNote(o.note);
+        return lp ? { useList: true, ...lp } : { useList: false, listPrice: "", discount: "" };
+      })(),
     });
   };
   const cancelEditOrder = () => { setExpandedOrderId(null); setEditDraft(null); };
   const saveEditOrder = (id) => {
-    if (!editDraft.itemName.trim() || !editDraft.quantity || !editDraft.unitPrice) {
+    const isPipe = isPipeCategory(catById[editDraft.categoryId]);
+    const listOn = isPipe && editDraft.useList && calcListUnit(editDraft.listPrice, editDraft.discount) != null;
+    const unitPrice = effectiveUnitPrice(editDraft, isPipe);
+    if (!editDraft.itemName.trim() || !editDraft.quantity || !unitPrice) {
       showToast("請填寫「品項名稱」「數量」「單價」後再儲存");
       return;
     }
-    updateOrder(id, { ...editDraft, amount: Number(editDraft.quantity) * Number(editDraft.unitPrice) });
+    const { useList, listPrice, discount, ...rest } = editDraft;
+    updateOrder(id, {
+      ...rest, unitPrice, amount: Number(editDraft.quantity) * Number(unitPrice),
+      listPrice: listOn ? Number(listPrice) : "", discount: listOn ? Number(discount) : "",
+      ...(listOn ? { note: withListNote(rest.note, listPrice, discount) } : {}),
+    });
     setExpandedOrderId(null);
     setEditDraft(null);
   };
-  const amount = (Number(orderForm.quantity) || 0) * (Number(orderForm.unitPrice) || 0);
+  const formIsPipe = isPipeCategory(catById[orderForm.categoryId]);
+  const formListOn = formIsPipe && orderForm.useList && calcListUnit(orderForm.listPrice, orderForm.discount) != null;
+  const formUnit = effectiveUnitPrice(orderForm, formIsPipe);
+  const amount = (Number(orderForm.quantity) || 0) * (Number(formUnit) || 0);
   const [manageOpen, setManageOpen] = useState(false);
   const [supplierManageOpen, setSupplierManageOpen] = useState(false);
   const [newMaterial, setNewMaterial] = useState({ name: "", unit: "", defaultPrice: "" });
@@ -3225,8 +3325,10 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
             <input placeholder="支 / 米 / 個" value={orderForm.unit} onChange={(e) => setOrderForm({ ...orderForm, unit: e.target.value })} />
           </Field>
           <Field label="單價">
-            <input type="number" step="any" min="0" value={orderForm.unitPrice} onChange={(e) => setOrderForm({ ...orderForm, unitPrice: e.target.value })} />
+            <input type="number" step="any" min="0" value={formListOn ? formUnit : orderForm.unitPrice} readOnly={formListOn}
+              title={formListOn ? "已用牌價 × 折數自動計算" : undefined} onChange={(e) => setOrderForm({ ...orderForm, unitPrice: e.target.value })} />
           </Field>
+          {formIsPipe && <ListPriceField form={orderForm} setForm={setOrderForm} orders={allOrders || orders} supplier={orderForm.supplier} />}
           <Field label="小計">
             <div className="wel-amount-preview">{fmtMoney(amount)}</div>
           </Field>
@@ -3383,10 +3485,14 @@ function OrdersTab({ orders, categories, catById, siteById, orderForm, setOrderF
                                     <input value={editDraft.unit} onChange={(e) => setEditDraft({ ...editDraft, unit: e.target.value })} />
                                   </Field>
                                   <Field label="單價">
-                                    <input type="number" step="any" min="0" value={editDraft.unitPrice} onChange={(e) => setEditDraft({ ...editDraft, unitPrice: e.target.value })} />
+                                    <input type="number" step="any" min="0"
+                                      value={isPipeCategory(catById[editDraft.categoryId]) && editDraft.useList && calcListUnit(editDraft.listPrice, editDraft.discount) != null ? calcListUnit(editDraft.listPrice, editDraft.discount) : editDraft.unitPrice}
+                                      readOnly={isPipeCategory(catById[editDraft.categoryId]) && editDraft.useList && calcListUnit(editDraft.listPrice, editDraft.discount) != null}
+                                      onChange={(e) => setEditDraft({ ...editDraft, unitPrice: e.target.value })} />
                                   </Field>
+                                  {isPipeCategory(catById[editDraft.categoryId]) && <ListPriceField form={editDraft} setForm={setEditDraft} orders={allOrders || orders} supplier={editDraft.supplier} />}
                                   <Field label="小計">
-                                    <div className="wel-amount-preview">{fmtMoney((Number(editDraft.quantity) || 0) * (Number(editDraft.unitPrice) || 0))}</div>
+                                    <div className="wel-amount-preview">{fmtMoney((Number(editDraft.quantity) || 0) * (Number(effectiveUnitPrice(editDraft, isPipeCategory(catById[editDraft.categoryId]))) || 0))}</div>
                                   </Field>
                                   <Field label="有無發票">
                                     <select value={editDraft.hasInvoice ? "yes" : "no"} onChange={(e) => setEditDraft({ ...editDraft, hasInvoice: e.target.value === "yes" })}>
@@ -6675,17 +6781,22 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
       </div>
       {syncPlan.length > 0 && (
         <div className="wel-card" style={{ marginBottom: 12, borderColor: "var(--amber)" }}>
-          <div className="wel-card-title"><Tags size={14} /> 有 {syncPlan.length} 個品項的類別，和叫貨紀錄裡實際用的不一樣</div>
+          <div className="wel-card-title"><Tags size={14} /> 有 {syncPlan.length} 項品項類別和叫貨紀錄沒有同步歸類</div>
           <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-            你在叫貨紀錄改過類別，但品項類別裡還是舊的。按下按鈕，會把這些品項的類別改成叫貨紀錄裡用的（只改品項類別的設定，不動任何叫貨紀錄）。之後在叫貨紀錄改類別，會自動同步，不用再按。
+            品項類別和叫貨紀錄的類別要是同一套。按下按鈕一次同步：品項類別沒被叫貨用過的，改成叫貨實際用的；叫貨紀錄沒有類別的，補上品項的類別（已經有類別的叫貨紀錄不會動）。之後在任一邊改類別，另一邊會自動跟著改，不用再按。
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
             {syncPlan.slice(0, 12).map((x) => (
-              <span key={x.id} className="wel-chip" title={x.name}>{x.name.length > 16 ? x.name.slice(0, 16) + "…" : x.name}：{categories.find((c) => c.id === x.from)?.name || "未歸類"} → <b>{categories.find((c) => c.id === x.to)?.name || "未分類"}</b></span>
+              <span key={x.id} className="wel-chip" title={x.name}>
+                {x.name.length > 16 ? x.name.slice(0, 16) + "…" : x.name}：
+                {x.kind === "orders"
+                  ? <>叫貨紀錄 {x.n} 筆沒有類別 → 補上 <b>{categories.find((c) => c.id === x.to)?.name || "未分類"}</b></>
+                  : <>{categories.find((c) => c.id === x.from)?.name || "未歸類"} → <b>{categories.find((c) => c.id === x.to)?.name || "未分類"}</b></>}
+              </span>
             ))}
-            {syncPlan.length > 12 && <span className="muted" style={{ fontSize: 12 }}>…還有 {syncPlan.length - 12} 個</span>}
+            {syncPlan.length > 12 && <span className="muted" style={{ fontSize: 12 }}>…還有 {syncPlan.length - 12} 項</span>}
           </div>
-          <button type="button" className="wel-btn-primary" onClick={onSyncCategories}>同步 {syncPlan.length} 個品項的類別</button>
+          <button type="button" className="wel-btn-primary" onClick={onSyncCategories}>同步歸類（{syncPlan.length} 項）</button>
         </div>
       )}
       <div className="wel-card wel-form" style={{ marginBottom: 12 }}>
