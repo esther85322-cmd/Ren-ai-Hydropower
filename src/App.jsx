@@ -30,7 +30,7 @@ const DEFAULT_CATEGORIES = [
 const DEFAULT_SITE = { id: "site-default", name: "預設案場", address: "" };
 
 const WAGE_OPTIONS = [];
-for (let v = 1500; v <= 3500; v += 100) WAGE_OPTIONS.push(v);
+for (let v = 1000; v <= 3500; v += 100) WAGE_OPTIONS.push(v);
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayStr = () => new Date().toISOString().slice(0, 10);
