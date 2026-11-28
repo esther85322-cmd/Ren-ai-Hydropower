@@ -1104,6 +1104,32 @@ export default function WaterElectricLedger() {
       else showToast(`已同步：品項「${item.name}」的類別改為「${catById[patch.categoryId]?.name || "未分類"}」，${nO} 筆叫貨紀錄一起改`);
     }
   };
+  // 未歸類品項歸類：只改目前還沒歸類的（品項清單＋同名叫貨／領用紀錄），已經歸好類的不動
+  const classifyItems = (names, categoryId) => {
+    const set = new Set(names);
+    if (!set.size || !categoryId) return;
+    const open = (id) => isUnclassified(id, categories);
+    const hit = (nm, cat) => set.has(nm) && open(cat);
+    const nItems = materialItems.filter((m) => hit(m.name, m.categoryId)).length;
+    const nOrders = orders.filter((o) => hit(o.itemName, o.categoryId)).length;
+    const nUsages = usages.filter((u) => hit(u.itemName, u.categoryId)).length;
+    if (nItems) {
+      const next = materialItems.map((m) => (hit(m.name, m.categoryId) ? { ...m, categoryId } : m));
+      setMaterialItems(next);
+      persistMaterialItems(next);
+    }
+    if (nOrders) {
+      const next = orders.map((o) => (hit(o.itemName, o.categoryId) ? { ...o, categoryId } : o));
+      setOrders(next);
+      persistOrders(next);
+    }
+    if (nUsages) {
+      const next = usages.map((u) => (hit(u.itemName, u.categoryId) ? { ...u, categoryId } : u));
+      setUsages(next);
+      persistUsages(next);
+    }
+    showToast(`已把 ${set.size} 個品項歸到「${catById[categoryId]?.name || "—"}」，叫貨紀錄 ${nOrders} 筆一起改`);
+  };
   const removeMaterialItem = (id) => {
     const next = materialItems.filter((m) => m.id !== id);
     setMaterialItems(next);
@@ -2437,6 +2463,7 @@ export default function WaterElectricLedger() {
               updateMaterialItem={updateMaterialItem}
               removeMaterialItem={removeMaterialItem}
               confirmScannedItems={confirmScannedItems}
+              classifyItems={classifyItems}
               syncPlan={syncPlan}
               onSyncCategories={syncCategoriesFromOrders}
               showToast={showToast}
@@ -6808,7 +6835,89 @@ function MasterSummaryTab({
   );
 }
 
-function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, syncPlan, onSyncCategories, showToast }) {
+// 沒有類別、類別已被刪掉、或放在名叫「未歸類」的類別，都算還沒歸類
+const isUnclassified = (id, categories) => {
+  const c = categories.find((x) => x.id === id);
+  return !c || c.name.trim() === "未歸類";
+};
+
+function UnclassifiedPanel({ categories, materialItems, orders, usages, classifyItems }) {
+  const [open, setOpen] = useState(true);
+  const [picked, setPicked] = useState({});
+  const [query, setQuery] = useState("");
+  const rows = useMemo(() => {
+    const m = new Map();
+    const row = (name) => {
+      if (!m.has(name)) m.set(name, { name, n: 0, last: "", supplier: "", price: "" });
+      return m.get(name);
+    };
+    materialItems.forEach((it) => { if (isUnclassified(it.categoryId, categories)) row(it.name).price = it.defaultPrice; });
+    orders.forEach((o) => {
+      if (!isUnclassified(o.categoryId, categories)) return;
+      const r = row(o.itemName);
+      r.n += 1;
+      if ((o.date || "") >= r.last) { r.last = o.date || ""; r.supplier = o.supplier || ""; r.price = o.unitPrice; }
+    });
+    usages.forEach((u) => { if (isUnclassified(u.categoryId, categories)) row(u.itemName); });
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-Hant", { numeric: true }));
+  }, [materialItems, orders, usages, categories]);
+  const targets = categories.filter((c) => c.name.trim() !== "未歸類");
+  if (!rows.length) return null;
+  const q = query.trim().toLowerCase();
+  const shown = q ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.supplier.toLowerCase().includes(q)) : rows;
+  const chosen = shown.filter((r) => picked[r.name]).map((r) => r.name);
+  const allOn = shown.length > 0 && chosen.length === shown.length;
+  const assign = (names, catId) => {
+    classifyItems(names, catId);
+    setPicked((prev) => { const next = { ...prev }; names.forEach((n) => delete next[n]); return next; });
+  };
+  const options = targets.map((c) => <option key={c.id} value={c.id}>{c.name}</option>);
+
+  return (
+    <div className="wel-card" style={{ marginBottom: 12, borderColor: "var(--amber)" }}>
+      <button type="button" className="wel-item-group-label wel-item-group-toggle" onClick={() => setOpen(!open)}>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <AlertTriangle size={14} color="var(--amber)" />
+        <b style={{ color: "var(--amber)" }}>有 {rows.length} 個品項還沒歸類</b>
+      </button>
+      {open && (
+        <>
+          <div className="muted" style={{ fontSize: 12, margin: "6px 0 8px" }}>
+            在右邊選類別就歸類完成；同類的可以先打勾，再一次歸到同一類。同名的叫貨紀錄會一起改，已經歸好類的不會動。
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+            <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12.5 }}>
+              <input type="checkbox" checked={allOn} onChange={() => setPicked(allOn ? {} : Object.fromEntries(shown.map((r) => [r.name, true])))} /> 全選
+            </label>
+            <input className="wel-scan-input" placeholder="搜尋品名／廠商（例：CD管）" value={query} onChange={(e) => { setQuery(e.target.value); setPicked({}); }} style={{ width: 200 }} />
+            <select className="wel-manager-mini" style={{ width: 200 }} value="" disabled={!chosen.length} onChange={(e) => e.target.value && assign(chosen, e.target.value)}>
+              <option value="">{chosen.length ? `把勾選的 ${chosen.length} 項歸到…` : "先勾選要一起歸類的品項"}</option>
+              {options}
+            </select>
+          </div>
+          <div style={{ maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+            {shown.length === 0 && <div className="muted" style={{ fontSize: 12 }}>沒有符合的品項</div>}
+            {shown.map((r) => (
+              <div key={r.name} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                <input type="checkbox" checked={!!picked[r.name]} onChange={(e) => setPicked({ ...picked, [r.name]: e.target.checked })} />
+                <span style={{ flex: "1 1 200px", fontSize: 13, wordBreak: "break-all" }}>{r.name}</span>
+                <span className="muted mono" style={{ fontSize: 11 }}>
+                  {r.n ? `${r.last} ${r.supplier} · ${r.n} 筆` : "尚無叫貨"}{r.price !== "" && r.price != null ? ` · ${fmtMoney(r.price)}` : ""}
+                </span>
+                <select className="wel-manager-mini" style={{ width: 120 }} value="" onChange={(e) => e.target.value && assign([r.name], e.target.value)}>
+                  <option value="">選類別…</option>
+                  {options}
+                </select>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCatName, setNewCatName, addCategory, removeCategory, renameCategory, materialItems, addMaterialItem, updateMaterialItem, removeMaterialItem, confirmScannedItems, classifyItems, syncPlan, onSyncCategories, showToast }) {
   const [scanOpen, setScanOpen] = useState(false);
   // 日期查詢：起迄任填一邊也可以；有設定時，下面所有類別／品項的筆數、金額與時間軸都只看這段期間
   const [range, setRange] = useState({ from: "", to: "" });
@@ -6882,6 +6991,7 @@ function CategoriesTab({ categories, orders: allOrders, usages: allUsages, newCa
           <h1 className="wel-h1">品項類別管理</h1>
         </div>
       </div>
+      <UnclassifiedPanel categories={categories} materialItems={materialItems} orders={allOrders} usages={allUsages} classifyItems={classifyItems} />
       <div className="wel-card wel-form">
         <div className="wel-form-grid wel-form-grid-btn" style={{ gridTemplateColumns: "1fr auto" }}>
           <Field label="新增類別名稱">
